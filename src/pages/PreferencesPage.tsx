@@ -83,7 +83,7 @@ export function PreferencesPage() {
       level: 'info',
       message: appConfig.useMockServices
         ? 'Mock services are enabled. Backend/LiteLLM calls are simulated in the browser.'
-        : 'Real services are enabled. Provider keys are stored in OpenBao and inference goes through LiteLLM.',
+        : 'Real services are enabled. Provider keys are stored encrypted and inference goes through LiteLLM.',
       timestamp: new Date().toISOString(),
     },
   ]);
@@ -151,14 +151,14 @@ export function PreferencesPage() {
 
   const saveConfiguration = async () => {
     setIsSaving(true);
-    addActivity('Saving LiteLLM provider configuration through the backend/OpenBao proxy.');
+    addActivity('Saving LiteLLM provider configuration through the backend secret-store proxy.');
 
     try {
       const saved = await llmConfigService.save(normalizeConfigs(configs));
       setConfigs(saved);
       setBanner({
         severity: 'success',
-        message: appConfig.useMockServices ? 'Configuration saved in mock storage.' : 'Configuration saved to OpenBao and LiteLLM.',
+        message: appConfig.useMockServices ? 'Configuration saved in mock storage.' : 'Configuration saved to encrypted secret storage and LiteLLM.',
       });
       addActivity(`Saved ${saved.length} LiteLLM model configuration(s).`, 'success');
     } catch (error) {
@@ -172,7 +172,7 @@ export function PreferencesPage() {
 
   const clearSecrets = async () => {
     setIsSaving(true);
-    addActivity('Clearing stored provider keys through backend/OpenBao proxy.');
+    addActivity('Clearing stored provider keys through backend secret storage.');
 
     try {
       await llmConfigService.clearSecrets();
@@ -180,7 +180,7 @@ export function PreferencesPage() {
       setConfigs(sanitized);
       setBanner({
         severity: 'info',
-        message: appConfig.useMockServices ? 'Stored mock secrets were cleared.' : 'OpenBao provider keys were cleared.',
+        message: appConfig.useMockServices ? 'Stored mock secrets were cleared.' : 'Stored provider keys were cleared.',
       });
       addActivity('Stored provider keys were cleared.', 'success');
     } catch (error) {
@@ -194,7 +194,7 @@ export function PreferencesPage() {
 
   const retrieveConfiguration = async () => {
     setIsRetrieving(true);
-    addActivity(`Retrieving LiteLLM configuration metadata from ${appConfig.openBaoUrl || 'backend OpenBao proxy'}.`);
+    addActivity('Retrieving LiteLLM configuration metadata from backend secret storage.');
 
     try {
       const retrievedConfigs = normalizeConfigs(await llmConfigService.retrieveConfiguration());
@@ -205,7 +205,7 @@ export function PreferencesPage() {
       );
       setBanner({
         severity: 'success',
-        message: `Retrieved configuration metadata from ${appConfig.openBaoUrl || 'mock OpenBao'}.`,
+        message: 'Retrieved configuration metadata from secret storage.',
       });
       addActivity(`Retrieved ${retrievedConfigs.length} LiteLLM metadata record(s).`, 'success');
     } catch (error) {
@@ -483,8 +483,8 @@ export function PreferencesPage() {
               }}
             >
               <strong>{config.name.trim() || `LiteLLM Model ${index + 1}`}</strong>
-              <span>{config.secretName ?? 'No OpenBao path yet'}</span>
-              <span>Provider key: {config.tokenStored ? config.tokenPreview ?? 'stored' : 'not stored'}</span>
+              <span>Credential store: {config.secretLeaseStatus === 'none' ? 'not stored' : 'configured'}</span>
+              <span>Provider key: {config.tokenStored ? 'stored' : 'not stored'}</span>
               <span>Model: {config.model || 'not set'}</span>
               <span>LiteLLM alias: {config.modelAlias || config.name}</span>
               <span>Version: {config.secretVersion ? `v${config.secretVersion}` : 'none'}</span>
@@ -507,7 +507,7 @@ export function PreferencesPage() {
             </div>
 
             <div style={metadataGridStyle}>
-              <MetadataItem label="OpenBao secret" value={activeConfig.secretName ?? 'Not stored yet'} />
+              <MetadataItem label="Secret store" value={activeConfig.secretLeaseStatus === 'none' ? 'Not stored yet' : 'Configured'} />
               <MetadataItem label="Version" value={activeConfig.secretVersion ? `v${activeConfig.secretVersion}` : 'None'} />
               <MetadataItem label="Added" value={formatDate(activeConfig.secretCreatedAt)} />
               <MetadataItem label="Updated" value={formatDate(activeConfig.secretUpdatedAt)} />
@@ -515,7 +515,7 @@ export function PreferencesPage() {
               <MetadataItem label="Lease status" value={activeConfig.secretLeaseStatus ?? 'none'} />
               <MetadataItem
                 label="Provider key"
-                value={activeConfig.tokenStored ? activeConfig.tokenPreview ?? 'Stored in OpenBao' : 'Not stored'}
+                value={activeConfig.tokenStored ? 'Stored encrypted' : 'Not stored'}
               />
               <MetadataItem label="LiteLLM alias" value={activeConfig.modelAlias ?? activeConfig.name} />
             </div>
@@ -559,7 +559,7 @@ export function PreferencesPage() {
                   style={inputStyle}
                 />
                 <span style={{ color: '#667085', fontSize: 12, fontWeight: 400 }}>
-                  Write-only rotation field. Leave blank to keep the existing OpenBao key; it is never returned to the app.
+                  Write-only rotation field. Leave blank to keep the existing encrypted key; it is never returned to the app.
                 </span>
               </label>
               <div style={{ gridColumn: 'span 3', alignSelf: 'center' }}>
@@ -661,7 +661,7 @@ export function PreferencesPage() {
           <div>
             <h2 style={{ margin: 0 }}>Backend Activity</h2>
             <p style={{ margin: '6px 0 0', color: '#667085' }}>
-              Shows OpenBao/backend proxy actions triggered from this screen.
+              Shows secret-store/backend proxy actions triggered from this screen.
             </p>
           </div>
           <button type="button" onClick={() => setActivityLog([])} style={secondaryButtonStyle}>

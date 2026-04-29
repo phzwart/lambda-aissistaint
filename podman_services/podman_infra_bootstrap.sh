@@ -33,10 +33,15 @@ LLM_ALLOWED_HOSTS="${LLM_ALLOWED_HOSTS:-api.cborg.lbl.gov}"
 LLM_ALLOW_PRIVATE_ENDPOINTS="${LLM_ALLOW_PRIVATE_ENDPOINTS:-false}"
 LLM_ALLOW_HTTP_ENDPOINTS="${LLM_ALLOW_HTTP_ENDPOINTS:-false}"
 LLM_REQUEST_TIMEOUT_MS="${LLM_REQUEST_TIMEOUT_MS:-30000}"
+API_PORT="${API_PORT:-8787}"
 LITELLM_PORT="${LITELLM_PORT:-4000}"
 LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-}"
 LITELLM_ADMIN_KEY="${LITELLM_ADMIN_KEY:-}"
 LITELLM_API_KEY="${LITELLM_API_KEY:-}"
+LITELLM_SECRET_BROKER_TOKEN="${LITELLM_SECRET_BROKER_TOKEN:-}"
+SECRET_STORE_PROVIDER="${SECRET_STORE_PROVIDER:-openbao}"
+SECRET_ENCRYPTION_KEY="${SECRET_ENCRYPTION_KEY:-}"
+SECRET_ENCRYPTION_KEY_VERSION="${SECRET_ENCRYPTION_KEY_VERSION:-v1}"
 TLS_GATEWAY_ENABLED="${TLS_GATEWAY_ENABLED:-1}"
 TLS_GATEWAY_PORT="${TLS_GATEWAY_PORT:-8443}"
 TLS_HTTP_PORT="${TLS_HTTP_PORT:-8088}"
@@ -293,6 +298,10 @@ rand_secret() {
   od -An -tx1 -N24 /dev/urandom | tr -d ' \n'
 }
 
+rand_hex32() {
+  od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+}
+
 load_existing_runtime_env() {
   if [[ -f "$ENV_FILE" ]]; then
     # Preserve generated credentials across container-only restarts. Existing
@@ -312,6 +321,8 @@ initialize_generated_secrets() {
   : "${LITELLM_MASTER_KEY:=sk-$(rand_secret)}"
   : "${LITELLM_ADMIN_KEY:=$LITELLM_MASTER_KEY}"
   : "${LITELLM_API_KEY:=$LITELLM_MASTER_KEY}"
+  : "${LITELLM_SECRET_BROKER_TOKEN:=sk-$(rand_secret)}"
+  : "${SECRET_ENCRYPTION_KEY:=$(rand_hex32)}"
 }
 
 show_container_logs() {
@@ -354,6 +365,7 @@ TLS_GATEWAY_PORT=$TLS_GATEWAY_PORT
 TLS_HTTP_PORT=$TLS_HTTP_PORT
 EXPOSE_RAW_SERVICE_PORTS=$EXPOSE_RAW_SERVICE_PORTS
 API_HOST=$API_HOST
+API_PORT=$API_PORT
 GATEWAY_BIND_HOST=$GATEWAY_BIND_HOST
 APP_PUBLIC_HOST=$APP_PUBLIC_HOST
 KEYCLOAK_PUBLIC_HOST=$KEYCLOAK_PUBLIC_HOST
@@ -393,7 +405,6 @@ OPENBAO_CONTAINER=$OPENBAO_CONTAINER
 OPENBAO_UNSEAL_KEY=${OPENBAO_UNSEAL_KEY:-}
 OPENBAO_ROOT_TOKEN=${OPENBAO_ROOT_TOKEN:-}
 OPENBAO_APP_TOKEN=${OPENBAO_APP_TOKEN:-}
-OPENBAO_LITELLM_TOKEN=${OPENBAO_LITELLM_TOKEN:-}
 MINIO_CONTAINER=$MINIO_CONTAINER
 MINIO_ROOT_USER=$MINIO_ROOT_USER
 MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD
@@ -411,6 +422,7 @@ LITELLM_PORT=$LITELLM_PORT
 LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY
 LITELLM_ADMIN_KEY=$LITELLM_ADMIN_KEY
 LITELLM_API_KEY=$LITELLM_API_KEY
+LITELLM_SECRET_BROKER_TOKEN=$LITELLM_SECRET_BROKER_TOKEN
 PROJECT_BUCKET_PREFIX=$PROJECT_BUCKET_PREFIX
 PROJECT_LOADED_PREFIX=$PROJECT_LOADED_PREFIX
 PROJECT_PARSED_PREFIX=$PROJECT_PARSED_PREFIX
@@ -432,6 +444,9 @@ LLM_ALLOWED_HOSTS=$LLM_ALLOWED_HOSTS
 LLM_ALLOW_PRIVATE_ENDPOINTS=$LLM_ALLOW_PRIVATE_ENDPOINTS
 LLM_ALLOW_HTTP_ENDPOINTS=$LLM_ALLOW_HTTP_ENDPOINTS
 LLM_REQUEST_TIMEOUT_MS=$LLM_REQUEST_TIMEOUT_MS
+SECRET_STORE_PROVIDER=$SECRET_STORE_PROVIDER
+SECRET_ENCRYPTION_KEY=$SECRET_ENCRYPTION_KEY
+SECRET_ENCRYPTION_KEY_VERSION=$SECRET_ENCRYPTION_KEY_VERSION
 OPENBAO_KV_MOUNT=$OPENBAO_KV_MOUNT
 OPENBAO_RW_PREFIX=$OPENBAO_RW_PREFIX
 ENV
@@ -443,6 +458,7 @@ BASE_DIR=$BASE_DIR
 NETWORK_NAME=$NETWORK_NAME
 HOST_IP=$HOST_IP
 API_HOST=$API_HOST
+API_PORT=$API_PORT
 PUBLIC_APP_URL=$PUBLIC_APP_URL
 PUBLIC_KEYCLOAK_URL=$PUBLIC_KEYCLOAK_URL
 PUBLIC_OPENBAO_URL=$PUBLIC_OPENBAO_URL
@@ -459,6 +475,7 @@ MINIO_APP_SECRET_KEY=$MINIO_APP_SECRET_KEY
 MINIO_REMOVAL_POLICY_NAME=$MINIO_REMOVAL_POLICY_NAME
 LITELLM_API_KEY=$LITELLM_API_KEY
 LITELLM_ADMIN_KEY=$LITELLM_ADMIN_KEY
+LITELLM_SECRET_BROKER_TOKEN=$LITELLM_SECRET_BROKER_TOKEN
 PROJECT_BUCKET_PREFIX=$PROJECT_BUCKET_PREFIX
 PROJECT_LOADED_PREFIX=$PROJECT_LOADED_PREFIX
 PROJECT_PARSED_PREFIX=$PROJECT_PARSED_PREFIX
@@ -475,6 +492,9 @@ LLM_ALLOWED_HOSTS=$LLM_ALLOWED_HOSTS
 LLM_ALLOW_PRIVATE_ENDPOINTS=$LLM_ALLOW_PRIVATE_ENDPOINTS
 LLM_ALLOW_HTTP_ENDPOINTS=$LLM_ALLOW_HTTP_ENDPOINTS
 LLM_REQUEST_TIMEOUT_MS=$LLM_REQUEST_TIMEOUT_MS
+SECRET_STORE_PROVIDER=$SECRET_STORE_PROVIDER
+SECRET_ENCRYPTION_KEY=$SECRET_ENCRYPTION_KEY
+SECRET_ENCRYPTION_KEY_VERSION=$SECRET_ENCRYPTION_KEY_VERSION
 OPENBAO_KV_MOUNT=$OPENBAO_KV_MOUNT
 OPENBAO_RW_PREFIX=$OPENBAO_RW_PREFIX
 OPENBAO_APP_TOKEN=${OPENBAO_APP_TOKEN:-}
@@ -563,6 +583,7 @@ YAML
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 try:
@@ -583,6 +604,25 @@ class OpenBaoSecretManager(CustomSecretManager):
             if env_value:
                 return env_value
             secret_name = env_name
+
+        if secret_name.startswith("aissistaint://"):
+            alias = secret_name.removeprefix("aissistaint://")
+            broker_url = os.environ.get("LITELLM_SECRET_BROKER_URL", "").rstrip("/")
+            broker_token = os.environ.get("LITELLM_SECRET_BROKER_TOKEN")
+            if not broker_url or not broker_token or not alias:
+                return None
+
+            request = urllib.request.Request(
+                f"{broker_url}/internal/litellm/secrets/{urllib.parse.quote(alias, safe='')}",
+                headers={"Authorization": f"Bearer {broker_token}"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                return None
+            value = payload.get("value")
+            return value if isinstance(value, str) and value else None
 
         if not secret_name.startswith("openbao://"):
             return os.environ.get(secret_name)
@@ -931,8 +971,8 @@ start_litellm() {
     -v "$LITELLM_CONFIG_FILE:/app/config.yaml:Z,ro" \
     -v "$LITELLM_SECRET_MANAGER_FILE:/app/openbao_secret_manager.py:Z,ro" \
     -e LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY" \
-    -e LITELLM_OPENBAO_URL="http://${OPENBAO_CONTAINER}:8200" \
-    -e LITELLM_OPENBAO_TOKEN="${OPENBAO_LITELLM_TOKEN:-}" \
+    -e LITELLM_SECRET_BROKER_URL="http://host.containers.internal:${API_PORT}" \
+    -e LITELLM_SECRET_BROKER_TOKEN="$LITELLM_SECRET_BROKER_TOKEN" \
     "$LITELLM_IMAGE" \
     --config /app/config.yaml --host 0.0.0.0 --port 4000 >/dev/null
 
@@ -1293,16 +1333,8 @@ path \"$OPENBAO_KV_MOUNT/metadata/$OPENBAO_RW_PREFIX/*\" {
 }
 POLICY
 
-    cat >/tmp/litellm-llm-read.hcl <<POLICY
-path \"$OPENBAO_KV_MOUNT/data/$OPENBAO_RW_PREFIX/users/*/llm/endpoints/*\" {
-  capabilities = [\"read\"]
-}
-POLICY
-
     bao policy write app-tokens-rw /tmp/app-tokens-rw.hcl >/dev/null
-    bao policy write litellm-llm-read /tmp/litellm-llm-read.hcl >/dev/null
     bao token create -policy=app-tokens-rw -field=token > /tmp/openbao-app-token
-    bao token create -policy=litellm-llm-read -field=token > /tmp/openbao-litellm-token
 
     bao write auth/oidc/role/default \
       role_type='oidc' \
@@ -1317,13 +1349,8 @@ POLICY
 
   local app_token
   app_token="$(podman exec "$OPENBAO_CONTAINER" sh -lc 'cat /tmp/openbao-app-token')"
-  local litellm_token
-  litellm_token="$(podman exec "$OPENBAO_CONTAINER" sh -lc 'cat /tmp/openbao-litellm-token')"
   if [[ -n "$app_token" ]]; then
     OPENBAO_APP_TOKEN="$app_token"
-  fi
-  if [[ -n "$litellm_token" ]]; then
-    OPENBAO_LITELLM_TOKEN="$litellm_token"
   fi
   write_runtime_env "$MINIO_CLIENT_SECRET" "$OPENBAO_CLIENT_SECRET"
 }

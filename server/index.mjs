@@ -8,7 +8,7 @@ import {
 import cors from 'cors';
 import express from 'express';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
@@ -51,6 +51,7 @@ const openBaoUrl = process.env.INTERNAL_OPENBAO_URL ?? process.env.VITE_OPENBAO_
 const openBaoToken = process.env.OPENBAO_APP_TOKEN ?? '';
 const openBaoKvMount = process.env.OPENBAO_KV_MOUNT ?? 'secret';
 const openBaoPrefix = process.env.OPENBAO_RW_PREFIX ?? 'app-tokens';
+const secretStoreProvider = process.env.SECRET_STORE_PROVIDER ?? 'openbao';
 const appDatabaseUrl = process.env.APP_DATABASE_URL ?? '';
 const minioEndpoint = process.env.INTERNAL_MINIO_ENDPOINT ?? process.env.MINIO_ENDPOINT ?? 'http://127.0.0.1:9000';
 const minioAccessKey = process.env.MINIO_APP_ACCESS_KEY ?? '';
@@ -81,6 +82,8 @@ const llmRequestTimeoutMs = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?
 const liteLlmUrl = (process.env.INTERNAL_LITELLM_URL ?? 'http://127.0.0.1:4000').replace(/\/+$/g, '');
 const liteLlmApiKey = process.env.LITELLM_API_KEY ?? '';
 const liteLlmAdminKey = process.env.LITELLM_ADMIN_KEY ?? process.env.LITELLM_MASTER_KEY ?? '';
+const liteLlmSecretBrokerToken = process.env.LITELLM_SECRET_BROKER_TOKEN ?? '';
+const secretEncryptionKeyVersion = process.env.SECRET_ENCRYPTION_KEY_VERSION ?? 'v1';
 const llmTiers = (process.env.VITE_LLM_TIERS ?? 'high,medium,low')
   .split(',')
   .map((tier) => tier.trim().toLowerCase())
@@ -102,6 +105,10 @@ if (!liteLlmApiKey) {
 
 if (!liteLlmAdminKey) {
   console.warn('LITELLM_ADMIN_KEY is not set. Saving LLM provider configuration will not be able to update LiteLLM model aliases.');
+}
+
+if (!liteLlmSecretBrokerToken) {
+  console.warn('LITELLM_SECRET_BROKER_TOKEN is not set. LiteLLM secret broker calls will fail until it is configured.');
 }
 
 if (process.env.NODE_ENV === 'production' && allowPrivateLlmEndpoints) {
@@ -156,6 +163,63 @@ app.use(express.json({ limit: '1mb' }));
 const log = (message, details = {}) => {
   const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : '';
   console.log(`[${new Date().toISOString()}] ${message}${suffix}`);
+};
+
+const loadSecretEncryptionKey = () => {
+  const keyFile = process.env.SECRET_ENCRYPTION_KEY_FILE ?? '';
+  const raw = process.env.SECRET_ENCRYPTION_KEY || (keyFile && existsSync(keyFile) ? readFileSync(keyFile, 'utf8').trim() : '');
+  if (!raw) {
+    return null;
+  }
+
+  const normalized = raw.trim();
+  const key = /^[0-9a-f]{64}$/i.test(normalized)
+    ? Buffer.from(normalized, 'hex')
+    : Buffer.from(normalized, 'base64');
+  if (key.length !== 32) {
+    throw new Error('SECRET_ENCRYPTION_KEY must decode to 32 bytes.');
+  }
+  return key;
+};
+
+const secretEncryptionKey = loadSecretEncryptionKey();
+
+const requireSecretEncryptionKey = () => {
+  if (!secretEncryptionKey) {
+    throw new Error('Secret encryption key is not configured on the backend.');
+  }
+  return secretEncryptionKey;
+};
+
+const tokenFingerprint = (token) => createHash('sha256').update(token).digest('hex').slice(0, 16);
+
+const encryptProviderToken = (token, associatedData) => {
+  const key = requireSecretEncryptionKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  cipher.setAAD(Buffer.from(associatedData));
+  const encrypted = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
+  return {
+    encryptedToken: encrypted.toString('base64'),
+    iv: iv.toString('base64'),
+    authTag: cipher.getAuthTag().toString('base64'),
+    keyVersion: secretEncryptionKeyVersion,
+    tokenFingerprint: tokenFingerprint(token),
+  };
+};
+
+const decryptProviderToken = (record, associatedData) => {
+  const key = requireSecretEncryptionKey();
+  if (!record?.encryptedToken || !record?.iv || !record?.authTag) {
+    throw new Error('Encrypted provider key record is incomplete.');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(record.iv, 'base64'));
+  decipher.setAAD(Buffer.from(associatedData));
+  decipher.setAuthTag(Buffer.from(record.authTag, 'base64'));
+  return Buffer.concat([
+    decipher.update(Buffer.from(record.encryptedToken, 'base64')),
+    decipher.final(),
+  ]).toString('utf8');
 };
 
 const userRoles = (payload = {}) => {
@@ -469,7 +533,13 @@ const openBaoFetch = async (path, init = {}) => {
   });
 
   if (!response.ok) {
-    const error = new Error(body.errors?.join(', ') || body.error || `OpenBao request failed with ${response.status}`);
+    log('OpenBao request failed', {
+      method: init.method ?? 'GET',
+      path,
+      status: response.status,
+      detail: body.errors?.join(', ') || body.error || body.raw || 'No response detail.',
+    });
+    const error = new Error('Secret store request failed.');
     error.status = response.status;
     throw error;
   }
@@ -493,13 +563,41 @@ const openBaoFetchOptional = async (path, init = {}) => {
   }
 };
 
+const ensureSupportedSecretStore = () => {
+  if (secretStoreProvider !== 'openbao') {
+    throw new Error(`Secret store provider ${secretStoreProvider} is not implemented by this backend.`);
+  }
+};
+
+const secretStoreRead = async (path) => {
+  ensureSupportedSecretStore();
+  return openBaoFetchOptional(dataApiPathForSecretPath(path));
+};
+
+const secretStoreWrite = async (path, data) => {
+  ensureSupportedSecretStore();
+  return openBaoFetch(dataApiPathForSecretPath(path), {
+    method: 'POST',
+    body: JSON.stringify({ data }),
+  });
+};
+
+const secretStoreDeleteMetadata = async (path) => {
+  ensureSupportedSecretStore();
+  return openBaoFetchOptional(`/v1/${openBaoKvMount}/metadata/${path}`, { method: 'DELETE' });
+};
+
 const secretUserSegment = (user) =>
   encodeURIComponent(String(user?.sub ?? user?.preferred_username ?? 'unknown-user')).replace(/[!'()*]/g, (char) =>
     `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
   );
 const secretPath = (user, index) => `${openBaoPrefix}/users/${secretUserSegment(user)}/llm/endpoints/${index + 1}`;
+const providerTokenAad = (path) => `${secretStoreProvider}:${path}:provider-token`;
 const dataApiPath = (user, index) => `/v1/${openBaoKvMount}/data/${secretPath(user, index)}`;
 const metadataApiPath = (user, index) => `/v1/${openBaoKvMount}/metadata/${secretPath(user, index)}`;
+const dataApiPathForSecretPath = (path) => `/v1/${openBaoKvMount}/data/${path}`;
+const aliasPath = (alias) => `${openBaoPrefix}/litellm/aliases/${encodeURIComponent(alias)}`;
+const aliasDataApiPath = (alias) => dataApiPathForSecretPath(aliasPath(alias));
 
 const defaultTier = (index) => configuredLlmTiers[index] ?? 'medium';
 const systemLlmName = (index) => `LLM_${defaultTier(index)}`;
@@ -510,19 +608,7 @@ const liteLlmSafeSegment = (value) =>
     .replace(/^-+|-+$/g, '')
     .slice(0, 48) || 'unknown-user';
 const liteLlmModelAlias = (user, index) => `aissistaint-${liteLlmSafeSegment(user?.sub ?? user?.preferred_username)}-${defaultTier(index)}`;
-const liteLlmSecretReference = (user, index) => `openbao://${openBaoKvMount}/data/${secretPath(user, index)}#token`;
-
-const tokenPreview = (token) => {
-  if (!token) {
-    return undefined;
-  }
-
-  if (token.length <= 4) {
-    return '****';
-  }
-
-  return `****${token.slice(-4)}`;
-};
+const liteLlmSecretReference = (user, index) => `aissistaint://${liteLlmModelAlias(user, index)}`;
 
 const chatCompletionsUrl = (baseUrl) => {
   const trimmed = baseUrl.replace(/\/$/, '');
@@ -593,11 +679,11 @@ const indexFromConfig = (config) => {
 
 const loadRunnableLlmConfig = async (user, config) => {
   const index = Math.min(indexFromConfig(config), llmEndpointCount - 1);
-  const existingSecret = await openBaoFetchOptional(dataApiPath(user, index));
+  const existingSecret = await secretStoreRead(secretPath(user, index));
   const existingData = existingSecret?.data?.data ?? {};
   const endpoint = config.endpoint || existingData.endpoint || '';
   const model = config.model || existingData.model || '';
-  const hasToken = Boolean(config.token || existingData.token);
+  const hasToken = Boolean(config.token || existingData.encryptedToken || existingData.token);
 
   if (!endpoint.startsWith('http')) {
     throw new Error('Provider base URL must start with http:// or https://.');
@@ -610,7 +696,7 @@ const loadRunnableLlmConfig = async (user, config) => {
   }
 
   if (!hasToken) {
-    throw new Error('No provider API key is available in OpenBao for this LiteLLM model.');
+    throw new Error('No provider API key is available in encrypted secret storage for this LiteLLM model.');
   }
 
   return {
@@ -714,7 +800,7 @@ const toLlmConfig = async (user, index) => {
 
   try {
     const [secret, metadata] = await Promise.all([
-      openBaoFetchOptional(dataApiPath(user, index)),
+      secretStoreRead(path),
       openBaoFetchOptional(metadataApiPath(user, index)),
     ]);
     if (!secret && !metadata) {
@@ -734,7 +820,7 @@ const toLlmConfig = async (user, index) => {
 
     const data = secret?.data?.data ?? {};
     const meta = metadata?.data ?? {};
-    const storedToken = typeof data.token === 'string' ? data.token : '';
+    const tokenStored = Boolean(data.encryptedToken || data.token);
 
     return {
       id: data.id ?? `openbao-llm-${index + 1}`,
@@ -751,8 +837,8 @@ const toLlmConfig = async (user, index) => {
       secretUpdatedAt: meta.updated_time,
       secretLastRetrievedAt: new Date().toISOString(),
       secretLeaseStatus: secret ? 'retrieved' : 'none',
-      tokenStored: Boolean(storedToken),
-      tokenPreview: tokenPreview(storedToken),
+      tokenStored,
+      tokenPreview: tokenStored ? 'stored' : undefined,
     };
   } catch (error) {
     return {
@@ -785,6 +871,33 @@ app.get('/api/health/details', requireAuth, requireAdmin, (_request, response) =
     liteLlmUrl,
     appDatabaseConfigured: Boolean(appDatabaseUrl),
   });
+});
+
+app.get('/internal/litellm/secrets/:modelAlias', async (request, response, next) => {
+  try {
+    const header = request.headers.authorization ?? '';
+    const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
+    if (!liteLlmSecretBrokerToken || token !== liteLlmSecretBrokerToken) {
+      response.status(403).json({ error: 'Forbidden.' });
+      return;
+    }
+
+    const modelAlias = request.params.modelAlias;
+    const aliasRecord = await secretStoreRead(aliasPath(modelAlias));
+    const secretPathForAlias = aliasRecord?.data?.data?.secretPath;
+    if (!secretPathForAlias) {
+      response.status(404).json({ error: 'Secret alias not found.' });
+      return;
+    }
+
+    const secretRecord = await secretStoreRead(secretPathForAlias);
+    const secretData = secretRecord?.data?.data ?? {};
+    const value = decryptProviderToken(secretData, providerTokenAad(secretPathForAlias));
+    log('LiteLLM secret broker request', { modelAlias, status: 200 });
+    response.json({ value });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/api/projects', requireAuth, async (request, response, next) => {
@@ -997,34 +1110,52 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
 
     await Promise.all(
       configs.slice(0, llmEndpointCount).map(async (config, index) => {
-        const existingSecret = await openBaoFetchOptional(dataApiPath(request.user, index));
+        const path = secretPath(request.user, index);
+        const existingSecret = await secretStoreRead(path);
         const existingData = existingSecret?.data?.data ?? {};
         const endpoint = config.endpoint ?? existingData.endpoint ?? '';
         const model = config.model ?? existingData.model ?? '';
-        const nextToken = config.token || existingData.token || '';
         const modelAlias = liteLlmModelAlias(request.user, index);
+        let encryptedTokenFields = {
+          encryptedToken: existingData.encryptedToken,
+          iv: existingData.iv,
+          authTag: existingData.authTag,
+          keyVersion: existingData.keyVersion,
+          tokenFingerprint: existingData.tokenFingerprint,
+        };
+
+        if (config.token) {
+          encryptedTokenFields = encryptProviderToken(config.token, providerTokenAad(path));
+        } else if (!existingData.encryptedToken && existingData.token) {
+          encryptedTokenFields = encryptProviderToken(existingData.token, providerTokenAad(path));
+        }
+        const hasProviderKey = Boolean(encryptedTokenFields.encryptedToken);
 
         if (endpoint) {
           await validateLlmEndpoint(endpoint);
         }
 
-        await openBaoFetch(dataApiPath(request.user, index), {
-          method: 'POST',
-          body: JSON.stringify({
-            data: {
-              id: config.id ?? `openbao-llm-${index + 1}`,
-              name: systemLlmName(index),
-              endpoint,
-              model,
-              modelAlias,
-              tier: defaultTier(index),
-              token: nextToken,
-              updatedAt: now,
-            },
-          }),
+        await secretStoreWrite(path, {
+          id: config.id ?? `secret-llm-${index + 1}`,
+          name: systemLlmName(index),
+          endpoint,
+          model,
+          modelAlias,
+          tier: defaultTier(index),
+          ...encryptedTokenFields,
+          updatedAt: now,
         });
 
-        if (endpoint && model && nextToken) {
+        await secretStoreWrite(aliasPath(modelAlias), {
+          modelAlias,
+          secretPath: path,
+          userSegment: secretUserSegment(request.user),
+          index,
+          tier: defaultTier(index),
+          updatedAt: now,
+        });
+
+        if (endpoint && model && hasProviderKey) {
           await configureLiteLlmModel(request.user, index, { endpoint, model });
         }
       }),
@@ -1090,7 +1221,7 @@ app.delete('/api/llm-config/secrets', requireAuth, async (request, response, nex
     await Promise.all(
       Array.from({ length: llmEndpointCount }, async (_unused, index) => {
         try {
-          await openBaoFetchOptional(metadataApiPath(request.user, index), { method: 'DELETE' });
+          await secretStoreDeleteMetadata(secretPath(request.user, index));
         } catch (error) {
           throw error;
         }
