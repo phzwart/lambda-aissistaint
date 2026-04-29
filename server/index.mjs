@@ -35,9 +35,10 @@ const loadEnvFile = (path) => {
 };
 
 loadEnvFile(resolve('.env.local'));
-loadEnvFile(process.env.PLATFORM_ENV_FILE ?? `${homedir()}/platform-demo/platform-demo.env`);
+loadEnvFile(process.env.PLATFORM_ENV_FILE || `${homedir()}/platform-demo/platform-demo-runtime.env`);
 
 const apiPort = Number.parseInt(process.env.API_PORT ?? '8787', 10);
+const apiHost = process.env.API_HOST ?? '127.0.0.1';
 const keycloakPublicUrl =
   process.env.PUBLIC_KEYCLOAK_URL ?? process.env.VITE_KEYCLOAK_URL ?? `http://${process.env.HOST_IP ?? '127.0.0.1'}:8080`;
 const keycloakInternalUrl = process.env.INTERNAL_KEYCLOAK_URL ?? keycloakPublicUrl;
@@ -47,13 +48,15 @@ const issuer = `${keycloakPublicUrl}/realms/${keycloakRealm}`;
 const jwks = createRemoteJWKSet(new URL(`${keycloakInternalUrl}/realms/${keycloakRealm}/protocol/openid-connect/certs`));
 
 const openBaoUrl = process.env.INTERNAL_OPENBAO_URL ?? process.env.VITE_OPENBAO_URL ?? 'http://127.0.0.1:8200';
-const openBaoToken = process.env.OPENBAO_APP_TOKEN ?? process.env.OPENBAO_ROOT_TOKEN;
+const openBaoToken = process.env.OPENBAO_APP_TOKEN ?? '';
 const openBaoKvMount = process.env.OPENBAO_KV_MOUNT ?? 'secret';
 const openBaoPrefix = process.env.OPENBAO_RW_PREFIX ?? 'app-tokens';
 const appDatabaseUrl = process.env.APP_DATABASE_URL ?? '';
 const minioEndpoint = process.env.INTERNAL_MINIO_ENDPOINT ?? process.env.MINIO_ENDPOINT ?? 'http://127.0.0.1:9000';
-const minioAccessKey = process.env.MINIO_APP_ACCESS_KEY ?? process.env.MINIO_ROOT_USER ?? '';
-const minioSecretKey = process.env.MINIO_APP_SECRET_KEY ?? process.env.MINIO_ROOT_PASSWORD ?? '';
+const minioAccessKey = process.env.MINIO_APP_ACCESS_KEY ?? '';
+const minioSecretKey = process.env.MINIO_APP_SECRET_KEY ?? '';
+const minioRemovalAccessKey = process.env.MINIO_REMOVAL_ACCESS_KEY ?? '';
+const minioRemovalSecretKey = process.env.MINIO_REMOVAL_SECRET_KEY ?? '';
 const minioRemovalPolicyName = process.env.MINIO_REMOVAL_POLICY_NAME ?? 'project-removal-rw';
 const projectBucketPrefix = process.env.PROJECT_BUCKET_PREFIX ?? 'aissistaint-project';
 const projectLoadedPrefix = process.env.PROJECT_LOADED_PREFIX ?? 'loaded';
@@ -73,6 +76,7 @@ const allowedLlmHosts = new Set(
     .filter(Boolean),
 );
 const allowPrivateLlmEndpoints = process.env.LLM_ALLOW_PRIVATE_ENDPOINTS === 'true';
+const allowHttpLlmEndpoints = process.env.LLM_ALLOW_HTTP_ENDPOINTS === 'true';
 const llmRequestTimeoutMs = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?? '30000', 10);
 const llmTiers = (process.env.VITE_LLM_TIERS ?? 'high,medium,low')
   .split(',')
@@ -82,31 +86,45 @@ const configuredLlmTiers = llmTiers.length > 0 ? llmTiers : ['high', 'medium', '
 const llmEndpointCount = configuredLlmTiers.length;
 
 if (!openBaoToken) {
-  console.warn('OPENBAO_APP_TOKEN or OPENBAO_ROOT_TOKEN is not set. OpenBao API calls will fail until a scoped app token is available.');
+  console.warn('OPENBAO_APP_TOKEN is not set. OpenBao API calls will fail until a scoped app token is available.');
 }
 
 if (!appDatabaseUrl) {
   console.warn('APP_DATABASE_URL is not set. Project API calls will fail until the app database is configured.');
 }
 
+if (process.env.NODE_ENV === 'production' && allowPrivateLlmEndpoints) {
+  throw new Error('LLM_ALLOW_PRIVATE_ENDPOINTS cannot be enabled when NODE_ENV=production.');
+}
+
+if (process.env.NODE_ENV === 'production' && allowedLlmHosts.size === 0) {
+  throw new Error('LLM_ALLOWED_HOSTS must be configured when NODE_ENV=production.');
+}
+
 const projectDb = appDatabaseUrl ? new pg.Pool({ connectionString: appDatabaseUrl }) : null;
-const minioClient =
-  minioAccessKey && minioSecretKey
+const createMinioClient = (accessKeyId, secretAccessKey) =>
+  accessKeyId && secretAccessKey
     ? new S3Client({
         endpoint: minioEndpoint,
         region: 'us-east-1',
         forcePathStyle: true,
         credentials: {
-          accessKeyId: minioAccessKey,
-          secretAccessKey: minioSecretKey,
+          accessKeyId,
+          secretAccessKey,
         },
       })
     : null;
+const minioClient = createMinioClient(minioAccessKey, minioSecretKey);
+const minioRemovalClient = createMinioClient(minioRemovalAccessKey, minioRemovalSecretKey);
 let projectDbReady = false;
 let projectDbInitPromise = null;
 
 if (!minioClient) {
-  console.warn('MINIO_APP_ACCESS_KEY/MINIO_APP_SECRET_KEY or MinIO root credentials are not set. Project bucket creation will fail.');
+  console.warn('MINIO_APP_ACCESS_KEY/MINIO_APP_SECRET_KEY are not set. Project bucket operations will fail until scoped app credentials are available.');
+}
+
+if (!minioRemovalClient) {
+  console.warn('MINIO_REMOVAL_ACCESS_KEY/MINIO_REMOVAL_SECRET_KEY are not set. Project deletion bucket lockdown will fail until scoped removal credentials are available.');
 }
 
 const app = express();
@@ -143,8 +161,8 @@ const hasAnyRole = (payload, roles) => {
   return roles.some((role) => assignedRoles.has(role));
 };
 
-const isAdmin = (payload) => hasAnyRole(payload, ['aissistaint-admin', 'admin', 'administrator']);
-const isRemovalAgent = (payload) => hasAnyRole(payload, ['removal-agent', 'removal-agents']);
+const isAdmin = (payload) => hasAnyRole(payload, ['aissistaint-admin']);
+const isRemovalAgent = (payload) => hasAnyRole(payload, ['removal-agent']);
 
 const requireAdmin = (request, response, next) => {
   if (isAdmin(request.user)) {
@@ -385,11 +403,11 @@ const writeProjectMetadataObject = async (project) => {
 };
 
 const restrictDeletedProjectBucket = async (bucketName) => {
-  if (!minioClient) {
-    throw new Error('MinIO credentials are not configured on the backend.');
+  if (!minioRemovalClient) {
+    throw new Error('MinIO removal credentials are not configured on the backend.');
   }
 
-  await minioClient.send(
+  await minioRemovalClient.send(
     new PutBucketPolicyCommand({
       Bucket: bucketName,
       Policy: JSON.stringify({
@@ -530,8 +548,8 @@ const validateLlmEndpoint = async (baseUrl) => {
     throw new Error('LLM base URL must be a valid URL.');
   }
 
-  if (!['https:', 'http:'].includes(parsed.protocol)) {
-    throw new Error('LLM base URL must use http or https.');
+  if (parsed.protocol !== 'https:' && !(allowHttpLlmEndpoints && parsed.protocol === 'http:')) {
+    throw new Error('LLM base URL must use https:// unless LLM_ALLOW_HTTP_ENDPOINTS=true is set for local development.');
   }
 
   const hostname = parsed.hostname.toLowerCase();
@@ -593,6 +611,7 @@ const callLlmChatEndpoint = async ({ endpoint, model, token }, question) => {
   const response = await fetch(url, {
     method: 'POST',
     signal: controller.signal,
+    redirect: 'manual',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -617,6 +636,9 @@ const callLlmChatEndpoint = async ({ endpoint, model, token }, question) => {
   });
 
   if (!response.ok) {
+    if (response.status >= 300 && response.status < 400) {
+      throw new Error('LLM endpoint redirects are not allowed.');
+    }
     throw new Error(body.error?.message ?? body.error ?? body.raw ?? `LLM endpoint failed with ${response.status}`);
   }
 
@@ -1019,8 +1041,8 @@ app.use((error, _request, response, _next) => {
   });
 });
 
-app.listen(apiPort, () => {
-  console.log(`AISSIStaint API proxy listening on http://127.0.0.1:${apiPort}`);
+app.listen(apiPort, apiHost, () => {
+  console.log(`AISSIStaint API proxy listening on http://${apiHost}:${apiPort}`);
   console.log(`Using Keycloak issuer ${issuer}`);
   console.log(`Using OpenBao ${openBaoUrl}/${openBaoKvMount}/${openBaoPrefix}`);
 });

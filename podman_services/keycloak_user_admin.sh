@@ -10,11 +10,13 @@ LAST_NAME=""
 TEMPORARY="true"
 CMD=""
 USERNAME=""
+PRINT_PASSWORD=0
+PASSWORD_OUT_FILE="${PASSWORD_OUT_FILE:-}"
 
 usage() {
   cat <<USAGE
 Usage:
-  $(basename "$0") [--env-file FILE] add USERNAME [--password PASS] [--email EMAIL] [--first FIRST] [--last LAST] [--temporary true|false]
+  $(basename "$0") [--env-file FILE] add USERNAME [--password PASS] [--email EMAIL] [--first FIRST] [--last LAST] [--temporary true|false] [--print-password]
   $(basename "$0") [--env-file FILE] reset-password USERNAME --password PASS [--temporary true|false]
   $(basename "$0") [--env-file FILE] enable USERNAME
   $(basename "$0") [--env-file FILE] disable USERNAME
@@ -44,6 +46,7 @@ load_env() {
   fi
   # shellcheck disable=SC1090
   . "$ENV_FILE"
+  : "${BASE_DIR:=$HOME/platform-demo}"
   : "${KEYCLOAK_CONTAINER:?missing in env file}"
   : "${KC_REALM:?missing in env file}"
   : "${KC_ADMIN_USER:?missing in env file}"
@@ -55,6 +58,7 @@ load_env() {
   : "${AISSISTAINT_UI_DEV_PORT:=5173}"
   : "${PUBLIC_APP_URL:=https://aissistaint.localhost:8443}"
   : "${PUBLIC_KEYCLOAK_URL:=https://keycloak.aissistaint.localhost:8443}"
+  : "${PASSWORD_OUT_FILE:=$BASE_DIR/keycloak-user-passwords.out}"
 }
 
 kc_login_and_exec() {
@@ -123,8 +127,10 @@ EOF2
 add_user() {
   local username="$1"
   local password="$TEMP_PASSWORD"
+  local generated_password=0
   if [[ -z "$password" ]]; then
     password="$(rand_password)"
+    generated_password=1
   fi
 
   KC_SCRIPT='USER_ID="$(user_id "$USERNAME")"
@@ -189,10 +195,24 @@ group_id() {
 eval "$KC_SCRIPT"
 EOF2
 
+  local password_line
+  if [[ "$PRINT_PASSWORD" == "1" ]]; then
+    password_line="  temporary password: $password"
+  elif [[ "$generated_password" == "1" ]]; then
+    mkdir -p "$(dirname "$PASSWORD_OUT_FILE")"
+    {
+      printf 'created_at=%s username=%s temporary=%s password=%s\n' "$(date -Is)" "$username" "$TEMPORARY" "$password"
+    } >> "$PASSWORD_OUT_FILE"
+    chmod 600 "$PASSWORD_OUT_FILE"
+    password_line="  temporary password: written to $PASSWORD_OUT_FILE"
+  else
+    password_line="  temporary password: provided via --password"
+  fi
+
   cat <<OUT
 User created or updated.
   username: $username
-  temporary password: $password
+$password_line
   temporary flag: $TEMPORARY
   realm: $KC_REALM
   account page: $PUBLIC_KEYCLOAK_URL/realms/$KC_REALM/account
@@ -424,6 +444,10 @@ while [[ $# -gt 0 ]]; do
       TEMPORARY="$2"
       shift 2
       ;;
+    --print-password)
+      PRINT_PASSWORD=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -435,6 +459,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+  echo "Do not run this script with sudo/root. Use rootless Podman as your normal user." >&2
+  exit 1
+fi
 
 require_cmd podman
 load_env

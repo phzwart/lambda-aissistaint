@@ -17,6 +17,8 @@ MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-}"
 MINIO_APP_ACCESS_KEY="${MINIO_APP_ACCESS_KEY:-aissistaint-app}"
 MINIO_APP_SECRET_KEY="${MINIO_APP_SECRET_KEY:-}"
+MINIO_REMOVAL_ACCESS_KEY="${MINIO_REMOVAL_ACCESS_KEY:-aissistaint-removal}"
+MINIO_REMOVAL_SECRET_KEY="${MINIO_REMOVAL_SECRET_KEY:-}"
 MINIO_BUCKET="${MINIO_BUCKET:-project-a}"
 MINIO_POLICY_NAME="${MINIO_POLICY_NAME:-project-a-rw}"
 MINIO_APP_POLICY_NAME="${MINIO_APP_POLICY_NAME:-aissistaint-app-rw}"
@@ -29,11 +31,14 @@ PROJECT_METADATA_OBJECT_KEY="${PROJECT_METADATA_OBJECT_KEY:-project.json}"
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-https://aissistaint.localhost:8443,http://localhost:5173,http://127.0.0.1:5173}"
 LLM_ALLOWED_HOSTS="${LLM_ALLOWED_HOSTS:-api.cborg.lbl.gov}"
 LLM_ALLOW_PRIVATE_ENDPOINTS="${LLM_ALLOW_PRIVATE_ENDPOINTS:-false}"
+LLM_ALLOW_HTTP_ENDPOINTS="${LLM_ALLOW_HTTP_ENDPOINTS:-false}"
 LLM_REQUEST_TIMEOUT_MS="${LLM_REQUEST_TIMEOUT_MS:-30000}"
-  TLS_GATEWAY_ENABLED="${TLS_GATEWAY_ENABLED:-1}"
+TLS_GATEWAY_ENABLED="${TLS_GATEWAY_ENABLED:-1}"
 TLS_GATEWAY_PORT="${TLS_GATEWAY_PORT:-8443}"
 TLS_HTTP_PORT="${TLS_HTTP_PORT:-8088}"
 EXPOSE_RAW_SERVICE_PORTS="${EXPOSE_RAW_SERVICE_PORTS:-1}"
+API_HOST="${API_HOST:-127.0.0.1}"
+GATEWAY_BIND_HOST="${GATEWAY_BIND_HOST:-127.0.0.1}"
 APP_PUBLIC_HOST="${APP_PUBLIC_HOST:-aissistaint.localhost}"
 KEYCLOAK_PUBLIC_HOST="${KEYCLOAK_PUBLIC_HOST:-keycloak.aissistaint.localhost}"
 OPENBAO_PUBLIC_HOST="${OPENBAO_PUBLIC_HOST:-openbao.aissistaint.localhost}"
@@ -121,6 +126,7 @@ CADDY_CONFIG_DIR="$BASE_CADDY_DIR/config"
 CADDY_DATA_DIR="$BASE_CADDY_DIR/data"
 CADDYFILE="$CADDY_CONFIG_DIR/Caddyfile"
 ENV_FILE="$BASE_DIR/${STACK_NAME}.env"
+RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-$BASE_DIR/${STACK_NAME}-runtime.env}"
 KEYCLOAK_SECRETS_OUT="$BASE_DIR/keycloak-secrets.out"
 
 require_cmd() {
@@ -235,7 +241,7 @@ ensure_keycloak_admin_login() {
   local recovery_password
   recovery_password="$(rand_secret)"
 
-  podman exec \
+  if ! podman exec \
     -e RECOVERY_PASSWORD="$recovery_password" \
     "$KEYCLOAK_CONTAINER" /opt/keycloak/bin/kc.sh bootstrap-admin user \
       --username "$recovery_user" \
@@ -244,7 +250,11 @@ ensure_keycloak_admin_login() {
       --db postgres \
       --db-url "jdbc:postgresql://$POSTGRES_CONTAINER:5432/keycloak" \
       --db-username keycloak \
-      --db-password "$KC_DB_PASSWORD" >/dev/null 2>&1 || true
+      --db-password "$KC_DB_PASSWORD" >/dev/null; then
+    echo "Failed to create temporary Keycloak recovery admin." >&2
+    show_container_logs "$KEYCLOAK_CONTAINER"
+    exit 1
+  fi
 
   podman exec \
     -e RECOVERY_USER="$recovery_user" \
@@ -286,6 +296,7 @@ initialize_generated_secrets() {
   : "${APP_POSTGRES_PASSWORD:=$(rand_secret)}"
   : "${MINIO_ROOT_PASSWORD:=$(rand_secret)}"
   : "${MINIO_APP_SECRET_KEY:=$(rand_secret)}"
+  : "${MINIO_REMOVAL_SECRET_KEY:=$(rand_secret)}"
 }
 
 show_container_logs() {
@@ -315,6 +326,7 @@ STACK_NAME=$STACK_NAME
 BASE_DIR=$BASE_DIR
 NETWORK_NAME=$NETWORK_NAME
 HOST_IP=$HOST_IP
+RUNTIME_ENV_FILE=$RUNTIME_ENV_FILE
 MANAGE_TLS_GATEWAY=$MANAGE_TLS_GATEWAY
 MANAGE_KEYCLOAK_POSTGRES=$MANAGE_KEYCLOAK_POSTGRES
 MANAGE_KEYCLOAK=$MANAGE_KEYCLOAK
@@ -325,6 +337,8 @@ TLS_GATEWAY_ENABLED=$TLS_GATEWAY_ENABLED
 TLS_GATEWAY_PORT=$TLS_GATEWAY_PORT
 TLS_HTTP_PORT=$TLS_HTTP_PORT
 EXPOSE_RAW_SERVICE_PORTS=$EXPOSE_RAW_SERVICE_PORTS
+API_HOST=$API_HOST
+GATEWAY_BIND_HOST=$GATEWAY_BIND_HOST
 APP_PUBLIC_HOST=$APP_PUBLIC_HOST
 KEYCLOAK_PUBLIC_HOST=$KEYCLOAK_PUBLIC_HOST
 OPENBAO_PUBLIC_HOST=$OPENBAO_PUBLIC_HOST
@@ -359,11 +373,16 @@ APP_POSTGRES_PASSWORD=$APP_POSTGRES_PASSWORD
 APP_POSTGRES_PORT=$APP_POSTGRES_PORT
 APP_DATABASE_URL=${APP_DATABASE_URL:-postgres://$APP_POSTGRES_USER:$APP_POSTGRES_PASSWORD@127.0.0.1:$APP_POSTGRES_PORT/$APP_POSTGRES_DB}
 OPENBAO_CONTAINER=$OPENBAO_CONTAINER
+OPENBAO_UNSEAL_KEY=${OPENBAO_UNSEAL_KEY:-}
+OPENBAO_ROOT_TOKEN=${OPENBAO_ROOT_TOKEN:-}
+OPENBAO_APP_TOKEN=${OPENBAO_APP_TOKEN:-}
 MINIO_CONTAINER=$MINIO_CONTAINER
 MINIO_ROOT_USER=$MINIO_ROOT_USER
 MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD
 MINIO_APP_ACCESS_KEY=$MINIO_APP_ACCESS_KEY
 MINIO_APP_SECRET_KEY=$MINIO_APP_SECRET_KEY
+MINIO_REMOVAL_ACCESS_KEY=$MINIO_REMOVAL_ACCESS_KEY
+MINIO_REMOVAL_SECRET_KEY=$MINIO_REMOVAL_SECRET_KEY
 MINIO_BUCKET=$MINIO_BUCKET
 MINIO_POLICY_NAME=$MINIO_POLICY_NAME
 MINIO_APP_POLICY_NAME=$MINIO_APP_POLICY_NAME
@@ -388,11 +407,53 @@ VITE_OPENBAO_URL=$PUBLIC_OPENBAO_URL
 CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS
 LLM_ALLOWED_HOSTS=$LLM_ALLOWED_HOSTS
 LLM_ALLOW_PRIVATE_ENDPOINTS=$LLM_ALLOW_PRIVATE_ENDPOINTS
+LLM_ALLOW_HTTP_ENDPOINTS=$LLM_ALLOW_HTTP_ENDPOINTS
 LLM_REQUEST_TIMEOUT_MS=$LLM_REQUEST_TIMEOUT_MS
 OPENBAO_KV_MOUNT=$OPENBAO_KV_MOUNT
 OPENBAO_RW_PREFIX=$OPENBAO_RW_PREFIX
 ENV
   chmod 600 "$ENV_FILE"
+
+  cat > "$RUNTIME_ENV_FILE" <<ENV
+STACK_NAME=$STACK_NAME
+BASE_DIR=$BASE_DIR
+NETWORK_NAME=$NETWORK_NAME
+HOST_IP=$HOST_IP
+API_HOST=$API_HOST
+PUBLIC_APP_URL=$PUBLIC_APP_URL
+PUBLIC_KEYCLOAK_URL=$PUBLIC_KEYCLOAK_URL
+PUBLIC_OPENBAO_URL=$PUBLIC_OPENBAO_URL
+PUBLIC_MINIO_URL=$PUBLIC_MINIO_URL
+PUBLIC_MINIO_CONSOLE_URL=$PUBLIC_MINIO_CONSOLE_URL
+INTERNAL_KEYCLOAK_URL=$INTERNAL_KEYCLOAK_URL
+INTERNAL_OPENBAO_URL=$INTERNAL_OPENBAO_URL
+INTERNAL_MINIO_ENDPOINT=$INTERNAL_MINIO_ENDPOINT
+APP_DATABASE_URL=${APP_DATABASE_URL:-postgres://$APP_POSTGRES_USER:$APP_POSTGRES_PASSWORD@127.0.0.1:$APP_POSTGRES_PORT/$APP_POSTGRES_DB}
+MINIO_ENDPOINT=$MINIO_ENDPOINT
+MINIO_APP_ACCESS_KEY=$MINIO_APP_ACCESS_KEY
+MINIO_APP_SECRET_KEY=$MINIO_APP_SECRET_KEY
+MINIO_REMOVAL_POLICY_NAME=$MINIO_REMOVAL_POLICY_NAME
+PROJECT_BUCKET_PREFIX=$PROJECT_BUCKET_PREFIX
+PROJECT_LOADED_PREFIX=$PROJECT_LOADED_PREFIX
+PROJECT_PARSED_PREFIX=$PROJECT_PARSED_PREFIX
+PROJECT_METADATA_OBJECT_KEY=$PROJECT_METADATA_OBJECT_KEY
+AISSISTAINT_UI_CLIENT_ID=$AISSISTAINT_UI_CLIENT_ID
+VITE_USE_MOCK_SERVICES=false
+VITE_KEYCLOAK_URL=$PUBLIC_KEYCLOAK_URL
+VITE_KEYCLOAK_REALM=$KC_REALM
+VITE_KEYCLOAK_CLIENT_ID=$AISSISTAINT_UI_CLIENT_ID
+VITE_API_BASE_URL=
+VITE_OPENBAO_URL=$PUBLIC_OPENBAO_URL
+CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS
+LLM_ALLOWED_HOSTS=$LLM_ALLOWED_HOSTS
+LLM_ALLOW_PRIVATE_ENDPOINTS=$LLM_ALLOW_PRIVATE_ENDPOINTS
+LLM_ALLOW_HTTP_ENDPOINTS=$LLM_ALLOW_HTTP_ENDPOINTS
+LLM_REQUEST_TIMEOUT_MS=$LLM_REQUEST_TIMEOUT_MS
+OPENBAO_KV_MOUNT=$OPENBAO_KV_MOUNT
+OPENBAO_RW_PREFIX=$OPENBAO_RW_PREFIX
+OPENBAO_APP_TOKEN=${OPENBAO_APP_TOKEN:-}
+ENV
+  chmod 600 "$RUNTIME_ENV_FILE"
 }
 
 write_openbao_config() {
@@ -503,8 +564,7 @@ write_minio_app_policy() {
         "s3:CreateBucket",
         "s3:GetBucketLocation",
         "s3:ListAllMyBuckets",
-        "s3:ListBucket",
-        "s3:PutBucketPolicy"
+        "s3:ListBucket"
       ],
       "Resource": [
         "arn:aws:s3:::${PROJECT_BUCKET_PREFIX}-*"
@@ -539,7 +599,8 @@ write_minio_removal_policy() {
         "s3:ListBucket",
         "s3:GetObject",
         "s3:PutObject",
-        "s3:DeleteObject"
+        "s3:DeleteObject",
+        "s3:PutBucketPolicy"
       ],
       "Resource": [
         "arn:aws:s3:::${PROJECT_BUCKET_PREFIX}-*",
@@ -558,7 +619,7 @@ prepare_dirs() {
 
   if [[ "$CLEAN_DATA" == "1" ]]; then
     warn "CLEAN_DATA=1 set. Removing data under $BASE_DIR"
-    rm -rf "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$OPENBAO_INIT_FILE" "$ENV_FILE" "$KEYCLOAK_SECRETS_OUT" "$MINIO_POLICY_FILE" "$MINIO_APP_POLICY_FILE" "$MINIO_REMOVAL_POLICY_FILE"
+    rm -rf "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$OPENBAO_INIT_FILE" "$ENV_FILE" "$RUNTIME_ENV_FILE" "$KEYCLOAK_SECRETS_OUT" "$MINIO_POLICY_FILE" "$MINIO_APP_POLICY_FILE" "$MINIO_REMOVAL_POLICY_FILE"
     mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR"
   fi
 
@@ -721,8 +782,8 @@ start_infra() {
       --network-alias "$OPENBAO_PUBLIC_HOST" \
       --network-alias "$MINIO_PUBLIC_HOST" \
       --network-alias "$MINIO_CONSOLE_PUBLIC_HOST" \
-      -p "${TLS_HTTP_PORT}:8080" \
-      -p "${TLS_GATEWAY_PORT}:8443" \
+      -p "${GATEWAY_BIND_HOST}:${TLS_HTTP_PORT}:8080" \
+      -p "${GATEWAY_BIND_HOST}:${TLS_GATEWAY_PORT}:8443" \
       -v "$CADDYFILE:/etc/caddy/Caddyfile:Z,ro" \
       -v "$CADDY_DATA_DIR:/data:z" \
       -v "$CADDY_CONFIG_DIR:/config:Z" \
@@ -975,6 +1036,12 @@ configure_minio() {
   podman run --rm "${minio_mc_network[@]}" -v "$MINIO_MC_DIR:/root/.mc:Z" "$MINIO_MC_IMAGE" \
     admin policy attach local "$MINIO_APP_POLICY_NAME" --user "$MINIO_APP_ACCESS_KEY" >/dev/null
 
+  info "Creating MinIO removal service user"
+  podman run --rm "${minio_mc_network[@]}" -v "$MINIO_MC_DIR:/root/.mc:Z" "$MINIO_MC_IMAGE" \
+    admin user add local "$MINIO_REMOVAL_ACCESS_KEY" "$MINIO_REMOVAL_SECRET_KEY" >/dev/null || true
+  podman run --rm "${minio_mc_network[@]}" -v "$MINIO_MC_DIR:/root/.mc:Z" "$MINIO_MC_IMAGE" \
+    admin policy attach local "$MINIO_REMOVAL_POLICY_NAME" --user "$MINIO_REMOVAL_ACCESS_KEY" >/dev/null
+
   info "Configuring MinIO OIDC"
   . "$ENV_FILE"
   podman run --rm "${minio_mc_network[@]}" -v "$MINIO_MC_DIR:/root/.mc:Z" "$MINIO_MC_IMAGE" \
@@ -1048,6 +1115,8 @@ configure_openbao() {
     cat "$OPENBAO_INIT_FILE" >&2 || true
     exit 1
   fi
+  OPENBAO_UNSEAL_KEY="$unseal_key"
+  OPENBAO_ROOT_TOKEN="$root_token"
 
   if curl -ksS "$INTERNAL_OPENBAO_URL/v1/sys/seal-status" | grep -q '"sealed":true'; then
     info "Unsealing OpenBao"
@@ -1057,13 +1126,7 @@ configure_openbao() {
     "
   fi
 
-  if ! grep -q '^OPENBAO_ROOT_TOKEN=' "$ENV_FILE" 2>/dev/null; then
-    {
-      printf 'OPENBAO_UNSEAL_KEY=%s\n' "$unseal_key"
-      printf 'OPENBAO_ROOT_TOKEN=%s\n' "$root_token"
-    } >> "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
-  fi
+  write_runtime_env "$MINIO_CLIENT_SECRET" "$OPENBAO_CLIENT_SECRET"
 
   info "Enabling KV v2 and configuring OpenBao OIDC"
   . "$ENV_FILE"
@@ -1108,10 +1171,8 @@ POLICY
   local app_token
   app_token="$(podman exec "$OPENBAO_CONTAINER" sh -lc 'cat /tmp/openbao-app-token')"
   if [[ -n "$app_token" ]]; then
-    {
-      printf 'OPENBAO_APP_TOKEN=%s\n' "$app_token"
-    } >> "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
+    OPENBAO_APP_TOKEN="$app_token"
+    write_runtime_env "$MINIO_CLIENT_SECRET" "$OPENBAO_CLIENT_SECRET"
   fi
 }
 
@@ -1132,7 +1193,8 @@ Admin endpoints:
   OpenBao UI:             $PUBLIC_OPENBAO_URL/ui
 
 Important local files:
-  Environment + secrets:  $ENV_FILE
+  Admin/bootstrap env:    $ENV_FILE
+  API runtime env:        $RUNTIME_ENV_FILE
   OpenBao init material:  $OPENBAO_INIT_FILE
   MinIO policy file:      $MINIO_POLICY_FILE
   MinIO removal policy:   $MINIO_REMOVAL_POLICY_FILE
@@ -1152,6 +1214,7 @@ Realm and access model:
   Default group name:     $KC_GROUP
   MinIO policy name:      $MINIO_POLICY_NAME
   Removal policy name:    $MINIO_REMOVAL_POLICY_NAME
+  Deletion authority:     aissistaint-admin or removal-agent, with explicit API removal credentials
   Project bucket prefix:  $PROJECT_BUCKET_PREFIX
   Project object prefixes:$PROJECT_LOADED_PREFIX/, $PROJECT_PARSED_PREFIX/
   Project metadata file:  $PROJECT_METADATA_OBJECT_KEY
@@ -1185,6 +1248,7 @@ main() {
   require_cmd podman
   require_cmd curl
   require_cmd sed
+  require_cmd jq
 
   load_existing_runtime_env
   initialize_generated_secrets
