@@ -55,7 +55,21 @@ flowchart TD
   secretFiles -->|"secret broker token"| litellm
 
   adminHelper -->|"add, list, disable, reset users"| keycloak
+
+  classDef ui fill:#d9f7d9,stroke:#2f8f2f,color:#102a10
+  classDef permanent fill:#ffe4bd,stroke:#b36b00,color:#332000
+  classDef security fill:#dbeafe,stroke:#2563eb,color:#102040
+
+  class user,ui ui
+  class caddy,api,keycloakDb,appDb,minio,litellm,provider,runtimeEnv,bootstrap permanent
+  class keycloak,openbao,adminBroker,secretBroker,secretFiles,adminHelper security
 ```
+
+Color guide:
+
+- Green: user-facing UI and browser entry points.
+- Orange: long-running or persistent runtime components.
+- Blue: identity, secret, broker, and administrative security controls.
 
 ## Key Interaction Notes
 
