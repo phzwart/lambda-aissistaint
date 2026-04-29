@@ -1,3 +1,10 @@
+import {
+  CreateBucketCommand,
+  HeadBucketCommand,
+  PutBucketPolicyCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import cors from 'cors';
 import express from 'express';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
@@ -29,17 +36,27 @@ loadEnvFile(resolve('.env.local'));
 loadEnvFile(process.env.PLATFORM_ENV_FILE ?? `${homedir()}/platform-demo/platform-demo.env`);
 
 const apiPort = Number.parseInt(process.env.API_PORT ?? '8787', 10);
-const keycloakUrl = process.env.VITE_KEYCLOAK_URL ?? `http://${process.env.HOST_IP ?? '127.0.0.1'}:8080`;
+const keycloakPublicUrl =
+  process.env.PUBLIC_KEYCLOAK_URL ?? process.env.VITE_KEYCLOAK_URL ?? `http://${process.env.HOST_IP ?? '127.0.0.1'}:8080`;
+const keycloakInternalUrl = process.env.INTERNAL_KEYCLOAK_URL ?? keycloakPublicUrl;
 const keycloakRealm = process.env.VITE_KEYCLOAK_REALM ?? process.env.KC_REALM ?? 'minio';
 const keycloakClientId = process.env.VITE_KEYCLOAK_CLIENT_ID ?? process.env.AISSISTAINT_UI_CLIENT_ID ?? 'aissistaint-ui';
-const issuer = `${keycloakUrl}/realms/${keycloakRealm}`;
-const jwks = createRemoteJWKSet(new URL(`${issuer}/protocol/openid-connect/certs`));
+const issuer = `${keycloakPublicUrl}/realms/${keycloakRealm}`;
+const jwks = createRemoteJWKSet(new URL(`${keycloakInternalUrl}/realms/${keycloakRealm}/protocol/openid-connect/certs`));
 
-const openBaoUrl = process.env.VITE_OPENBAO_URL ?? 'http://127.0.0.1:8200';
+const openBaoUrl = process.env.INTERNAL_OPENBAO_URL ?? process.env.VITE_OPENBAO_URL ?? 'http://127.0.0.1:8200';
 const openBaoToken = process.env.OPENBAO_ROOT_TOKEN;
 const openBaoKvMount = process.env.OPENBAO_KV_MOUNT ?? 'secret';
 const openBaoPrefix = process.env.OPENBAO_RW_PREFIX ?? 'app-tokens';
 const appDatabaseUrl = process.env.APP_DATABASE_URL ?? '';
+const minioEndpoint = process.env.INTERNAL_MINIO_ENDPOINT ?? process.env.MINIO_ENDPOINT ?? 'http://127.0.0.1:9000';
+const minioRootUser = process.env.MINIO_ROOT_USER ?? '';
+const minioRootPassword = process.env.MINIO_ROOT_PASSWORD ?? '';
+const minioRemovalPolicyName = process.env.MINIO_REMOVAL_POLICY_NAME ?? 'project-removal-rw';
+const projectBucketPrefix = process.env.PROJECT_BUCKET_PREFIX ?? 'aissistaint-project';
+const projectLoadedPrefix = process.env.PROJECT_LOADED_PREFIX ?? 'loaded';
+const projectParsedPrefix = process.env.PROJECT_PARSED_PREFIX ?? 'parsed';
+const projectMetadataObjectKey = process.env.PROJECT_METADATA_OBJECT_KEY ?? 'project.json';
 const llmTiers = (process.env.VITE_LLM_TIERS ?? 'high,medium,low')
   .split(',')
   .map((tier) => tier.trim().toLowerCase())
@@ -56,7 +73,23 @@ if (!appDatabaseUrl) {
 }
 
 const projectDb = appDatabaseUrl ? new pg.Pool({ connectionString: appDatabaseUrl }) : null;
+const minioClient =
+  minioRootUser && minioRootPassword
+    ? new S3Client({
+        endpoint: minioEndpoint,
+        region: 'us-east-1',
+        forcePathStyle: true,
+        credentials: {
+          accessKeyId: minioRootUser,
+          secretAccessKey: minioRootPassword,
+        },
+      })
+    : null;
 let projectDbReady = false;
+
+if (!minioClient) {
+  console.warn('MINIO_ROOT_USER or MINIO_ROOT_PASSWORD is not set. Project bucket creation will fail.');
+}
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
@@ -124,11 +157,19 @@ const requireProjectDb = async () => {
       name text NOT NULL CHECK (length(trim(name)) > 0),
       description text NOT NULL DEFAULT '',
       status text NOT NULL DEFAULT 'active',
+      bucket_name text,
+      loaded_prefix text NOT NULL DEFAULT 'loaded',
+      parsed_prefix text NOT NULL DEFAULT 'parsed',
+      metadata_object_key text NOT NULL DEFAULT 'project.json',
       created_by text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `);
+  await projectDb.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS bucket_name text');
+  await projectDb.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS loaded_prefix text NOT NULL DEFAULT 'loaded'`);
+  await projectDb.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS parsed_prefix text NOT NULL DEFAULT 'parsed'`);
+  await projectDb.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS metadata_object_key text NOT NULL DEFAULT 'project.json'`);
   await projectDb.query(`
     CREATE TABLE IF NOT EXISTS project_members (
       project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -147,12 +188,125 @@ const toProject = (row) => ({
   name: row.name,
   description: row.description,
   status: row.status,
+  bucketName: row.bucket_name,
+  loadedPrefix: row.loaded_prefix,
+  parsedPrefix: row.parsed_prefix,
+  metadataObjectKey: row.metadata_object_key,
   createdBy: row.created_by,
   createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
   updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
 });
 
 const userSubject = (request) => String(request.user?.sub ?? request.user?.preferred_username ?? 'unknown-user');
+
+const normalizeBucketSegment = (value) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+
+const projectBucketName = (projectId, name) => {
+  const prefix = normalizeBucketSegment(projectBucketPrefix) || 'aissistaint-project';
+  const slug = normalizeBucketSegment(name) || 'project';
+  return `${prefix}-${slug}-${projectId.slice(0, 8)}`.slice(0, 63).replace(/-+$/g, '');
+};
+
+const objectPrefix = (value) => value.replace(/^\/+|\/+$/g, '') || 'data';
+const objectKey = (value) => value.replace(/^\/+/g, '') || 'project.json';
+
+const ensureProjectBucket = async ({ bucketName, loadedPrefix, parsedPrefix }) => {
+  if (!minioClient) {
+    throw new Error('MinIO credentials are not configured on the backend.');
+  }
+
+  try {
+    await minioClient.send(new HeadBucketCommand({ Bucket: bucketName }));
+  } catch {
+    await minioClient.send(new CreateBucketCommand({ Bucket: bucketName }));
+  }
+
+  await Promise.all(
+    [loadedPrefix, parsedPrefix].map((prefix) =>
+      minioClient.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: `${objectPrefix(prefix)}/`,
+          Body: '',
+        }),
+      ),
+    ),
+  );
+};
+
+const writeProjectMetadataObject = async (project) => {
+  if (!minioClient) {
+    throw new Error('MinIO credentials are not configured on the backend.');
+  }
+
+  if (!project.bucketName) {
+    throw new Error('Project does not have a MinIO bucket configured.');
+  }
+
+  const metadata = {
+    id: project.id,
+    name: project.name,
+    description: project.description,
+    status: project.status,
+    bucketName: project.bucketName,
+    loadedPrefix: project.loadedPrefix,
+    parsedPrefix: project.parsedPrefix,
+    metadataObjectKey: project.metadataObjectKey,
+    createdBy: project.createdBy,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+    deletedAt: project.deletedAt,
+  };
+
+  await minioClient.send(
+    new PutObjectCommand({
+      Bucket: project.bucketName,
+      Key: objectKey(project.metadataObjectKey ?? projectMetadataObjectKey),
+      Body: JSON.stringify(metadata, null, 2),
+      ContentType: 'application/json',
+    }),
+  );
+};
+
+const restrictDeletedProjectBucket = async (bucketName) => {
+  if (!minioClient) {
+    throw new Error('MinIO credentials are not configured on the backend.');
+  }
+
+  await minioClient.send(
+    new PutBucketPolicyCommand({
+      Bucket: bucketName,
+      Policy: JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'HideDeletedProjectFromRegularUsers',
+            Effect: 'Deny',
+            Principal: '*',
+            Action: [
+              's3:GetBucketLocation',
+              's3:ListBucket',
+              's3:GetObject',
+              's3:PutObject',
+              's3:DeleteObject',
+            ],
+            Resource: [`arn:aws:s3:::${bucketName}`, `arn:aws:s3:::${bucketName}/*`],
+            Condition: {
+              StringNotEquals: {
+                'jwt:policy': minioRemovalPolicyName,
+              },
+            },
+          },
+        ],
+      }),
+    }),
+  );
+};
 
 const openBaoFetch = async (path, init = {}) => {
   if (!openBaoToken) {
@@ -367,6 +521,7 @@ app.get('/api/health', (_request, response) => {
   response.json({
     ok: true,
     issuer,
+    keycloakJwksUrl: `${keycloakInternalUrl}/realms/${keycloakRealm}/protocol/openid-connect/certs`,
     openBaoUrl,
     openBaoKvMount,
     openBaoPrefix,
@@ -378,7 +533,7 @@ app.get('/api/projects', requireAuth, async (_request, response, next) => {
   try {
     const db = await requireProjectDb();
     const result = await db.query(`
-      SELECT id, name, description, status, created_by, created_at, updated_at
+      SELECT id, name, description, status, bucket_name, loaded_prefix, parsed_prefix, metadata_object_key, created_by, created_at, updated_at
       FROM projects
       ORDER BY updated_at DESC, created_at DESC
     `);
@@ -401,16 +556,23 @@ app.post('/api/projects', requireAuth, async (request, response, next) => {
       return;
     }
 
+    const projectId = randomUUID();
+    const bucketName = projectBucketName(projectId, name);
+    const loadedPrefix = objectPrefix(projectLoadedPrefix);
+    const parsedPrefix = objectPrefix(projectParsedPrefix);
+    const metadataObjectKey = objectKey(projectMetadataObjectKey);
+    await ensureProjectBucket({ bucketName, loadedPrefix, parsedPrefix });
+
     const client = await db.connect();
     try {
       await client.query('BEGIN');
       const result = await client.query(
         `
-          INSERT INTO projects (id, name, description, created_by)
-          VALUES ($1, $2, $3, $4)
-          RETURNING id, name, description, status, created_by, created_at, updated_at
+          INSERT INTO projects (id, name, description, bucket_name, loaded_prefix, parsed_prefix, metadata_object_key, created_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          RETURNING id, name, description, status, bucket_name, loaded_prefix, parsed_prefix, metadata_object_key, created_by, created_at, updated_at
         `,
-        [randomUUID(), name, description, subject],
+        [projectId, name, description, bucketName, loadedPrefix, parsedPrefix, metadataObjectKey, subject],
       );
       await client.query(
         `
@@ -420,8 +582,9 @@ app.post('/api/projects', requireAuth, async (request, response, next) => {
         `,
         [result.rows[0].id, subject],
       );
+      await writeProjectMetadataObject(toProject(result.rows[0]));
       await client.query('COMMIT');
-      log('POST /api/projects', { id: result.rows[0].id, name });
+      log('POST /api/projects', { id: result.rows[0].id, name, bucketName });
       response.status(201).json({ project: toProject(result.rows[0]) });
     } catch (error) {
       await client.query('ROLLBACK');
@@ -448,27 +611,88 @@ app.patch('/api/projects/:id', requireAuth, async (request, response, next) => {
       return;
     }
 
-    const result = await db.query(
-      `
-        UPDATE projects
-        SET
-          name = COALESCE($2, name),
-          description = COALESCE($3, description),
-          status = COALESCE($4, status),
-          updated_at = now()
-        WHERE id = $1
-        RETURNING id, name, description, status, created_by, created_at, updated_at
-      `,
-      [id, name, description, status],
-    );
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `
+          UPDATE projects
+          SET
+            name = COALESCE($2, name),
+            description = COALESCE($3, description),
+            status = COALESCE($4, status),
+            updated_at = now()
+          WHERE id = $1
+          RETURNING id, name, description, status, bucket_name, loaded_prefix, parsed_prefix, metadata_object_key, created_by, created_at, updated_at
+        `,
+        [id, name, description, status],
+      );
 
-    if (result.rowCount === 0) {
-      response.status(404).json({ error: 'Project not found.' });
-      return;
+      if (result.rowCount === 0) {
+        await client.query('ROLLBACK');
+        response.status(404).json({ error: 'Project not found.' });
+        return;
+      }
+
+      const project = toProject(result.rows[0]);
+      await writeProjectMetadataObject(project);
+      await client.query('COMMIT');
+      log('PATCH /api/projects/:id', { id, metadataObjectKey: project.metadataObjectKey });
+      response.json({ project });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
+  } catch (error) {
+    next(error);
+  }
+});
 
-    log('PATCH /api/projects/:id', { id });
-    response.json({ project: toProject(result.rows[0]) });
+app.delete('/api/projects/:id', requireAuth, async (request, response, next) => {
+  try {
+    const db = await requireProjectDb();
+    const id = request.params.id;
+    const client = await db.connect();
+
+    try {
+      await client.query('BEGIN');
+      const existing = await client.query(
+        `
+          SELECT id, name, description, status, bucket_name, loaded_prefix, parsed_prefix, metadata_object_key, created_by, created_at, updated_at
+          FROM projects
+          WHERE id = $1
+        `,
+        [id],
+      );
+
+      if (existing.rowCount === 0) {
+        await client.query('ROLLBACK');
+        response.status(404).json({ error: 'Project not found.' });
+        return;
+      }
+
+      const project = toProject(existing.rows[0]);
+      if (project.bucketName) {
+        await writeProjectMetadataObject({
+          ...project,
+          status: 'deleted',
+          deletedAt: new Date().toISOString(),
+        });
+        await restrictDeletedProjectBucket(project.bucketName);
+      }
+
+      await client.query('DELETE FROM projects WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      log('DELETE /api/projects/:id', { id, bucketName: project.bucketName });
+      response.status(204).send();
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   } catch (error) {
     next(error);
   }

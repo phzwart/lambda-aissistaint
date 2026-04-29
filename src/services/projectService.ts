@@ -47,6 +47,10 @@ export const projectService = {
       name: input.name,
       description: input.description,
       status: 'active',
+      bucketName: `mock-project-${crypto.randomUUID().slice(0, 8)}`,
+      loadedPrefix: 'loaded',
+      parsedPrefix: 'parsed',
+      metadataObjectKey: 'project.json',
       createdBy: 'mock-user',
       createdAt: now,
       updatedAt: now,
@@ -82,5 +86,17 @@ export const projectService = {
       throw new Error('Project not found.');
     }
     return project;
+  },
+
+  async delete(id: string): Promise<void> {
+    if (useApi()) {
+      await apiRequest<void>(`/api/projects/${id}`, {
+        method: 'DELETE',
+      });
+      return;
+    }
+
+    await mockDelay(150);
+    writeMockProjects(readMockProjects().filter((project) => project.id !== id));
   },
 };

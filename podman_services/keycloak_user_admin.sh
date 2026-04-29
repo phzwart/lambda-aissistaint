@@ -53,6 +53,8 @@ load_env() {
   : "${HOST_IP:=127.0.0.1}"
   : "${AISSISTAINT_UI_CLIENT_ID:=aissistaint-ui}"
   : "${AISSISTAINT_UI_DEV_PORT:=5173}"
+  : "${PUBLIC_APP_URL:=https://aissistaint.localhost:8443}"
+  : "${PUBLIC_KEYCLOAK_URL:=https://keycloak.aissistaint.localhost:8443}"
 }
 
 kc_login_and_exec() {
@@ -193,8 +195,8 @@ User created or updated.
   temporary password: $password
   temporary flag: $TEMPORARY
   realm: $KC_REALM
-  account page: http://$HOST_IP:8080/realms/$KC_REALM/account
-  app login: http://$HOST_IP:${AISSISTAINT_UI_DEV_PORT}/login
+  account page: $PUBLIC_KEYCLOAK_URL/realms/$KC_REALM/account
+  app login: $PUBLIC_APP_URL/login
 OUT
 }
 
@@ -206,6 +208,7 @@ setup_ui_client() {
     -e AISSISTAINT_UI_CLIENT_ID="$AISSISTAINT_UI_CLIENT_ID" \
     -e AISSISTAINT_UI_DEV_PORT="$AISSISTAINT_UI_DEV_PORT" \
     -e HOST_IP="$HOST_IP" \
+    -e PUBLIC_APP_URL="$PUBLIC_APP_URL" \
     "$KEYCLOAK_CONTAINER" bash -s <<'EOF2'
 set -euo pipefail
 export PATH=/opt/keycloak/bin:$PATH
@@ -226,14 +229,16 @@ cat >/tmp/aissistaint-ui-client.json <<JSON
   "frontchannelLogout": true,
   "attributes": {
     "pkce.code.challenge.method": "S256",
-    "post.logout.redirect.uris": "http://localhost:$AISSISTAINT_UI_DEV_PORT/*##http://127.0.0.1:$AISSISTAINT_UI_DEV_PORT/*##http://$HOST_IP:$AISSISTAINT_UI_DEV_PORT/*"
+    "post.logout.redirect.uris": "$PUBLIC_APP_URL/*##http://localhost:$AISSISTAINT_UI_DEV_PORT/*##http://127.0.0.1:$AISSISTAINT_UI_DEV_PORT/*##http://$HOST_IP:$AISSISTAINT_UI_DEV_PORT/*"
   },
   "redirectUris": [
+    "$PUBLIC_APP_URL/*",
     "http://localhost:$AISSISTAINT_UI_DEV_PORT/*",
     "http://127.0.0.1:$AISSISTAINT_UI_DEV_PORT/*",
     "http://$HOST_IP:$AISSISTAINT_UI_DEV_PORT/*"
   ],
   "webOrigins": [
+    "$PUBLIC_APP_URL",
     "http://localhost:$AISSISTAINT_UI_DEV_PORT",
     "http://127.0.0.1:$AISSISTAINT_UI_DEV_PORT",
     "http://$HOST_IP:$AISSISTAINT_UI_DEV_PORT"
@@ -254,6 +259,7 @@ AISSIStaint UI Keycloak client configured.
   client id: $AISSISTAINT_UI_CLIENT_ID
   realm: $KC_REALM
   valid app origins:
+    $PUBLIC_APP_URL
     http://localhost:$AISSISTAINT_UI_DEV_PORT
     http://127.0.0.1:$AISSISTAINT_UI_DEV_PORT
     http://$HOST_IP:$AISSISTAINT_UI_DEV_PORT

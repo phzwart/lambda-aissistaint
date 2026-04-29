@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { appConfig } from '../config/env';
 import { llmConfigService } from '../services/llmConfigService';
 import { projectService } from '../services/projectService';
+import { useWorkflowStore } from '../state/workflowStore';
 import type { ConnectionStatus, LlmConfig, LlmTier, Project } from '../types/domain';
 
 const tierLabels: Record<LlmTier, string> = {
@@ -60,12 +61,15 @@ export function PreferencesPage() {
   const [selectedChatConfigId, setSelectedChatConfigId] = useState('');
   const [chatQuestion, setChatQuestion] = useState('');
   const [isChatting, setIsChatting] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState('');
+  const projects = useWorkflowStore((state) => state.projects);
+  const activeProject = useWorkflowStore((state) => state.activeProject);
+  const setProjects = useWorkflowStore((state) => state.setProjects);
+  const setActiveProjectId = useWorkflowStore((state) => state.setActiveProjectId);
   const [projectName, setProjectName] = useState('');
   const [projectDescription, setProjectDescription] = useState('');
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
   const [isSavingProject, setIsSavingProject] = useState(false);
+  const [isDeletingProject, setIsDeletingProject] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: crypto.randomUUID(),
@@ -111,7 +115,6 @@ export function PreferencesPage() {
       .list()
       .then((loadedProjects) => {
         setProjects(loadedProjects);
-        setActiveProjectId(loadedProjects[0]?.id ?? '');
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : 'Failed to load projects.';
@@ -122,7 +125,6 @@ export function PreferencesPage() {
 
   const activeConfig = configs.find((config) => config.id === activeConfigId) ?? configs[0];
   const activeConfigIndex = activeConfig ? configs.findIndex((config) => config.id === activeConfig.id) : -1;
-  const activeProject = projects.find((project) => project.id === activeProjectId) ?? projects[0];
 
   const updateConfig = (id: string, patch: Partial<LlmConfig>) => {
     setConfigs((current) =>
@@ -275,7 +277,7 @@ export function PreferencesPage() {
     setIsSavingProject(true);
     try {
       const project = await projectService.create({ name, description });
-      setProjects((current) => [project, ...current]);
+      setProjects([project, ...projects]);
       setActiveProjectId(project.id);
       setProjectName('');
       setProjectDescription('');
@@ -300,7 +302,7 @@ export function PreferencesPage() {
         description: activeProject.description,
         status: activeProject.status,
       });
-      setProjects((current) => current.map((item) => (item.id === project.id ? project : item)));
+      setProjects(projects.map((item) => (item.id === project.id ? project : item)));
       setBanner({ severity: 'success', message: `Project "${project.name}" saved.` });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to save project.';
@@ -310,13 +312,43 @@ export function PreferencesPage() {
     }
   };
 
+  const deleteActiveProject = async () => {
+    if (!activeProject) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete project "${activeProject.name}" from the database?\n\nThe MinIO bucket will be kept for administrators or removal-agents, but it will no longer appear in the project list.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingProject(true);
+    try {
+      await projectService.delete(activeProject.id);
+      const remainingProjects = projects.filter((project) => project.id !== activeProject.id);
+      setProjects(remainingProjects);
+      setActiveProjectId(remainingProjects[0]?.id ?? '');
+      setBanner({
+        severity: 'success',
+        message: `Project "${activeProject.name}" deleted from the database. Its MinIO bucket was retained.`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete project.';
+      setBanner({ severity: 'error', message });
+    } finally {
+      setIsDeletingProject(false);
+    }
+  };
+
   const updateActiveProject = (patch: Partial<Project>) => {
     if (!activeProject) {
       return;
     }
 
-    setProjects((current) =>
-      current.map((project) =>
+    setProjects(
+      projects.map((project) =>
         project.id === activeProject.id
           ? {
               ...project,
@@ -348,6 +380,32 @@ export function PreferencesPage() {
           {banner.message}
         </div>
       )}
+
+      <section style={activeProjectSelectorStyle}>
+        <label style={{ ...fieldStyle, gap: 8 }}>
+          Choose Active Project
+          <select
+            value={activeProject?.id ?? ''}
+            onChange={(event) => setActiveProjectId(event.target.value)}
+            disabled={isLoadingProjects || projects.length === 0}
+            style={inputStyle}
+          >
+            {isLoadingProjects && <option value="">Loading projects...</option>}
+            {!isLoadingProjects && projects.length === 0 && <option value="">No projects available</option>}
+            {!isLoadingProjects &&
+              projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+          </select>
+        </label>
+        <div style={{ color: '#667085', fontSize: 13 }}>
+          Active project: <strong style={{ color: '#172033' }}>{activeProject?.name ?? 'None selected'}</strong>
+        </div>
+      </section>
+
+      <hr style={setupDividerStyle} />
 
       <div style={setupTabsStyle} role="tablist" aria-label="Setup sections">
         <button
@@ -384,7 +442,7 @@ export function PreferencesPage() {
             ...(activeSetupTab === 'project' ? activeSetupTabButtonStyle : undefined),
           }}
         >
-          Project
+          Project Setup
         </button>
       </div>
 
@@ -628,13 +686,10 @@ export function PreferencesPage() {
 
       {activeSetupTab === 'agent' && (
         <section style={cardStyle}>
-          <div style={{ display: 'grid', gap: 8, marginBottom: 20 }}>
-            <h2 style={{ margin: 0 }}>Agent Setup</h2>
-            <p style={{ margin: 0, color: '#667085' }}>
-              Configure agent behavior for the workflow. This tab is ready for agent-specific settings that should
-              remain separate from LLM endpoint credentials.
-            </p>
-          </div>
+          <p style={{ margin: '0 0 20px', color: '#667085' }}>
+            Configure agent behavior for the workflow. This tab is ready for agent-specific settings that should
+            remain separate from LLM endpoint credentials.
+          </p>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
             <div style={{ ...readOnlyFieldStyle, gridColumn: 'span 6' }}>
@@ -651,15 +706,13 @@ export function PreferencesPage() {
 
       {activeSetupTab === 'project' && (
         <section style={cardStyle}>
-          <div style={{ display: 'grid', gap: 8, marginBottom: 20 }}>
-            <h2 style={{ margin: 0 }}>Project</h2>
-            <p style={{ margin: 0, color: '#667085' }}>
-              Browse projects, create new project records, and describe the work that downstream agents will process.
-            </p>
-          </div>
+          <p style={{ margin: '0 0 20px', color: '#667085' }}>
+            Browse projects, create new project records, and describe the work that downstream agents will process.
+          </p>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 0.8fr) minmax(0, 1.2fr)', gap: 20 }}>
+          <div style={projectPanelGridStyle}>
             <div style={{ display: 'grid', gap: 16, alignContent: 'start' }}>
+              <h3 style={sectionHeadingStyle}>Define / Select</h3>
               <form onSubmit={createProject} style={{ ...metadataGridStyle, marginBottom: 0 }}>
                 <label style={{ ...fieldStyle, gridColumn: '1 / -1' }}>
                   New project name
@@ -680,42 +733,54 @@ export function PreferencesPage() {
                     style={textareaStyle}
                   />
                 </label>
-                <button type="submit" disabled={isSavingProject || !projectName.trim()} style={primaryButtonStyle}>
+                <button
+                  type="submit"
+                  disabled={isSavingProject || isDeletingProject || !projectName.trim()}
+                  style={primaryButtonStyle}
+                >
                   {isSavingProject ? 'Saving...' : 'Add Project'}
                 </button>
               </form>
 
-              <div style={projectListStyle}>
-                {isLoadingProjects ? (
-                  <div style={{ color: '#667085' }}>Loading projects...</div>
-                ) : projects.length === 0 ? (
-                  <div style={{ color: '#667085' }}>No projects yet.</div>
-                ) : (
-                  projects.map((project) => (
-                    <button
-                      key={project.id}
-                      type="button"
-                      onClick={() => setActiveProjectId(project.id)}
-                      style={{
-                        ...summaryCardStyle,
-                        ...(project.id === activeProject?.id ? activeSummaryCardStyle : undefined),
-                      }}
-                    >
-                      <strong>{project.name}</strong>
-                      <span>{project.description || 'No description yet'}</span>
-                      <span>Updated: {formatDate(project.updatedAt)}</span>
-                    </button>
-                  ))
-                )}
-              </div>
+              <label style={fieldStyle}>
+                Select existing project
+                <select
+                  value={activeProject?.id ?? ''}
+                  onChange={(event) => setActiveProjectId(event.target.value)}
+                  disabled={isLoadingProjects || projects.length === 0}
+                  style={inputStyle}
+                >
+                  {isLoadingProjects && <option value="">Loading projects...</option>}
+                  {!isLoadingProjects && projects.length === 0 && <option value="">No projects yet</option>}
+                  {!isLoadingProjects &&
+                    projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+
+              {activeProject && (
+                <div style={selectedProjectSummaryStyle}>
+                  <strong>{activeProject.name}</strong>
+                  <span>Bucket: {activeProject.bucketName ?? 'pending'}</span>
+                  <span>Updated: {formatDate(activeProject.updatedAt)}</span>
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'grid', gap: 16, alignContent: 'start' }}>
+              <h3 style={sectionHeadingStyle}>Details</h3>
               {activeProject ? (
                 <>
                   <div style={metadataGridStyle}>
                     <MetadataItem label="Project ID" value={activeProject.id} />
                     <MetadataItem label="Status" value={activeProject.status} />
+                    <MetadataItem label="MinIO bucket" value={activeProject.bucketName ?? 'Not created yet'} />
+                    <MetadataItem label="Loaded prefix" value={`${activeProject.loadedPrefix ?? 'loaded'}/`} />
+                    <MetadataItem label="Parsed prefix" value={`${activeProject.parsedPrefix ?? 'parsed'}/`} />
+                    <MetadataItem label="Project JSON" value={activeProject.metadataObjectKey ?? 'project.json'} />
                     <MetadataItem label="Created" value={formatDate(activeProject.createdAt)} />
                     <MetadataItem label="Updated" value={formatDate(activeProject.updatedAt)} />
                   </div>
@@ -736,9 +801,22 @@ export function PreferencesPage() {
                       style={textareaStyle}
                     />
                   </label>
-                  <div>
-                    <button type="button" onClick={saveActiveProject} disabled={isSavingProject} style={primaryButtonStyle}>
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={saveActiveProject}
+                      disabled={isSavingProject || isDeletingProject}
+                      style={primaryButtonStyle}
+                    >
                       {isSavingProject ? 'Saving...' : 'Save Project'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={deleteActiveProject}
+                      disabled={isSavingProject || isDeletingProject}
+                      style={dangerButtonStyle}
+                    >
+                      {isDeletingProject ? 'Deleting...' : 'Delete Project'}
                     </button>
                   </div>
                 </>
@@ -778,6 +856,24 @@ const cardStyle = {
   borderRadius: 16,
   background: '#ffffff',
   boxShadow: '0 8px 30px rgba(31, 78, 121, 0.08)',
+} satisfies CSSProperties;
+
+const activeProjectSelectorStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'minmax(260px, 420px) minmax(220px, 1fr)',
+  gap: 16,
+  alignItems: 'end',
+  padding: 18,
+  border: '1px solid #dbe3ee',
+  borderRadius: 14,
+  background: '#ffffff',
+} satisfies CSSProperties;
+
+const setupDividerStyle = {
+  width: '100%',
+  border: 0,
+  borderTop: '1px solid #b8d8ef',
+  margin: '0 0 4px',
 } satisfies CSSProperties;
 
 const setupTabsStyle = {
@@ -958,12 +1054,29 @@ const pillStyle = {
   textTransform: 'capitalize',
 } satisfies CSSProperties;
 
-const projectListStyle = {
+const projectPanelGridStyle = {
   display: 'grid',
-  gap: 12,
-  maxHeight: 520,
-  overflowY: 'auto',
-  paddingRight: 4,
+  gridTemplateColumns: 'minmax(260px, 0.8fr) minmax(0, 1.2fr)',
+  gap: 24,
+} satisfies CSSProperties;
+
+const sectionHeadingStyle = {
+  margin: 0,
+  paddingBottom: 10,
+  borderBottom: '1px solid #b8d8ef',
+  color: '#1f4e79',
+  fontSize: 18,
+} satisfies CSSProperties;
+
+const selectedProjectSummaryStyle = {
+  display: 'grid',
+  gap: 6,
+  padding: 14,
+  border: '1px solid #dbe3ee',
+  borderRadius: 12,
+  background: '#f8fafc',
+  color: '#172033',
+  fontSize: 13,
 } satisfies CSSProperties;
 
 const chatWindowStyle = {

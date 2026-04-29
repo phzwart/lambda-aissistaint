@@ -59,6 +59,10 @@ export interface Project {
   name: string;
   description: string;
   status: 'active' | 'archived';
+  bucketName?: string;
+  loadedPrefix?: string;
+  parsedPrefix?: string;
+  metadataObjectKey?: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

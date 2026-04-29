@@ -2,6 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { appConfig } from '../../config/env';
 import { useAuthStore } from '../../state/authStore';
+import { useWorkflowStore } from '../../state/workflowStore';
 
 const navigationItems = [
   {
@@ -35,6 +36,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
+  const activeProject = useWorkflowStore((state) => state.activeProject);
   const [hoveredPath, setHoveredPath] = useState<string | null>(null);
 
   const handleLogout = async () => {
@@ -132,6 +134,14 @@ export function AppShell() {
           <div style={{ flex: 1 }}>
             <h2 style={{ margin: 0, fontSize: 30 }}>{appConfig.appTitle}</h2>
             <p style={{ margin: '4px 0 0', color: '#667085' }}>{appConfig.appSubtitle}</p>
+          </div>
+          <div style={activeProjectBadgeStyle}>
+            <span style={{ color: '#667085', fontSize: 12, fontWeight: 700, textTransform: 'uppercase' }}>
+              Active Project
+            </span>
+            <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {activeProject?.name ?? 'None selected'}
+            </strong>
           </div>
           <div
             style={{
@@ -249,4 +259,17 @@ const tooltipStyle = {
   boxShadow: '0 16px 40px rgba(31, 78, 121, 0.18)',
   fontSize: 13,
   lineHeight: 1.35,
+} satisfies CSSProperties;
+
+const activeProjectBadgeStyle = {
+  minWidth: 220,
+  maxWidth: 320,
+  display: 'grid',
+  gap: 2,
+  padding: '8px 12px',
+  border: '1px solid #b8d8ef',
+  borderRadius: 12,
+  background: '#ffffff',
+  color: '#172033',
+  boxShadow: '0 8px 20px rgba(31, 78, 121, 0.08)',
 } satisfies CSSProperties;
