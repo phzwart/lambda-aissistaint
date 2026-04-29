@@ -8,15 +8,12 @@
     "dev:ui": "vite --host 0.0.0.0",
     "dev:api": "node server/index.mjs",
     "dev:litellm-admin": "node server/litellm-admin-broker.mjs",
+    "test": "node --test",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1038.0",
-    "@emotion/react": "latest",
-    "@emotion/styled": "latest",
-    "@mui/icons-material": "5",
-    "@mui/material": "5",
     "concurrently": "^9.2.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",

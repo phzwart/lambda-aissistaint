@@ -9,12 +9,13 @@ import cors from 'cors';
 import express from 'express';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { lookup } from 'node:dns/promises';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import pg from 'pg';
+import { actorFromPayload, logAuditEvent } from './lib/auditEvents.mjs';
+import { isAllowedLiteLlmAlias } from './lib/brokerPolicy.mjs';
+import { createLlmEndpointValidator, parseAllowedHosts } from './lib/llmEndpointPolicy.mjs';
 
 const loadEnvFile = (path, { allowEmpty = true } = {}) => {
   if (!path || !existsSync(path)) {
@@ -37,9 +38,10 @@ const loadEnvFile = (path, { allowEmpty = true } = {}) => {
   }
 };
 
-const defaultPlatformDir = `${homedir()}/platform-demo`;
 loadEnvFile(resolve('.env.local'), { allowEmpty: false });
-loadEnvFile(process.env.PLATFORM_ENV_FILE || `${defaultPlatformDir}/platform-demo-runtime.env`);
+const stackName = process.env.STACK_NAME ?? 'platform-demo';
+const defaultPlatformDir = process.env.BASE_DIR || `${homedir()}/${stackName}`;
+loadEnvFile(process.env.PLATFORM_ENV_FILE || `${defaultPlatformDir}/${stackName}-runtime.env`);
 loadEnvFile(process.env.API_SECRET_ENV_FILE || `${defaultPlatformDir}/secrets/api-runtime.env`);
 loadEnvFile(process.env.LITELLM_SECRET_BROKER_ENV_FILE || `${defaultPlatformDir}/secrets/litellm-secret-broker.env`);
 if (process.env.API_LOAD_REMOVAL_SECRETS === 'true') {
@@ -79,12 +81,7 @@ const allowedOrigins = new Set(
     .map((origin) => origin.trim())
     .filter(Boolean),
 );
-const allowedLlmHosts = new Set(
-  (process.env.LLM_ALLOWED_HOSTS ?? 'api.cborg.lbl.gov')
-    .split(',')
-    .map((host) => host.trim().toLowerCase())
-    .filter(Boolean),
-);
+const allowedLlmHosts = parseAllowedHosts(process.env.LLM_ALLOWED_HOSTS ?? 'api.cborg.lbl.gov');
 const allowPrivateLlmEndpoints = process.env.LLM_ALLOW_PRIVATE_ENDPOINTS === 'true';
 const allowHttpLlmEndpoints = process.env.LLM_ALLOW_HTTP_ENDPOINTS === 'true';
 const allowAnyLlmHosts = process.env.LLM_ALLOW_ANY_HOSTS === 'true';
@@ -96,7 +93,11 @@ const liteLlmAdminBrokerUrl = (process.env.LITELLM_ADMIN_BROKER_URL ?? 'http://1
 const liteLlmAdminBrokerToken = process.env.LITELLM_ADMIN_BROKER_TOKEN ?? '';
 const liteLlmSecretBrokerToken = process.env.LITELLM_SECRET_BROKER_TOKEN ?? '';
 const secretEncryptionKeyVersion = process.env.SECRET_ENCRYPTION_KEY_VERSION ?? 'v1';
-const allowedLiteLlmAliasPattern = /^aissistaint-[a-z0-9_-]{1,48}-(high|medium|low)$/;
+const validateLlmEndpoint = createLlmEndpointValidator({
+  allowedHosts: allowedLlmHosts,
+  allowPrivateEndpoints: allowPrivateLlmEndpoints,
+  allowHttpEndpoints: allowHttpLlmEndpoints,
+});
 const llmTiers = (process.env.VITE_LLM_TIERS ?? 'high,medium,low')
   .split(',')
   .map((tier) => tier.trim().toLowerCase())
@@ -320,6 +321,14 @@ const requireAuth = async (request, response, next) => {
     next();
   } catch (error) {
     log('Invalid Keycloak token', { detail: error instanceof Error ? error.message : 'Unknown verification error.' });
+    logAuditEvent({
+      event: 'auth.token_invalid',
+      actor: 'anonymous',
+      action: 'verify',
+      resourceType: 'auth',
+      outcome: 'denied',
+      metadata: { reason: error instanceof Error ? error.name : 'unknown' },
+    });
     response.status(401).json({
       error: 'Invalid Keycloak token.',
     });
@@ -400,7 +409,7 @@ const toProject = (row) => ({
   updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
 });
 
-const userSubject = (request) => String(request.user?.sub ?? request.user?.preferred_username ?? 'unknown-user');
+const userSubject = (request) => actorFromPayload(request.user);
 
 const getProjectRole = async (client, projectId, request) => {
   if (isAdmin(request.user) || isRemovalAgent(request.user)) {
@@ -642,57 +651,6 @@ const chatCompletionsUrl = (baseUrl) => {
   return `${trimmed}/chat/completions`;
 };
 
-const isPrivateAddress = (address) => {
-  if (address === '::1' || address === '0:0:0:0:0:0:0:1') {
-    return true;
-  }
-
-  if (address.startsWith('fe80:') || address.startsWith('fc') || address.startsWith('fd')) {
-    return true;
-  }
-
-  const parts = address.split('.').map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) {
-    return false;
-  }
-
-  const [a, b] = parts;
-  return (
-    a === 10 ||
-    a === 127 ||
-    a === 0 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168)
-  );
-};
-
-const validateLlmEndpoint = async (baseUrl) => {
-  let parsed;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw new Error('LLM base URL must be a valid URL.');
-  }
-
-  if (parsed.protocol !== 'https:' && !(allowHttpLlmEndpoints && parsed.protocol === 'http:')) {
-    throw new Error('LLM base URL must use https:// unless LLM_ALLOW_HTTP_ENDPOINTS=true is set for local development.');
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-  if (allowedLlmHosts.size > 0 && !allowedLlmHosts.has(hostname)) {
-    throw new Error(`LLM host ${hostname} is not allowed.`);
-  }
-
-  if (!allowPrivateLlmEndpoints) {
-    const addresses = isIP(hostname) ? [{ address: hostname }] : await lookup(hostname, { all: true });
-    if (addresses.some(({ address }) => isPrivateAddress(address))) {
-      throw new Error('LLM endpoint cannot resolve to a private or loopback address.');
-    }
-  }
-};
-
 const indexFromConfig = (config) => {
   const source = `${config.secretName ?? ''} ${config.id ?? ''}`;
   const match = source.match(/endpoints\/(\d+)|openbao-llm-(\d+)/);
@@ -755,6 +713,15 @@ const configureLiteLlmModel = async (user, index, { endpoint, model }) => {
   log('LiteLLM model configuration broker request', {
     modelAlias,
     status: response.status,
+  });
+  logAuditEvent({
+    event: 'litellm_model.configure',
+    actor: actorFromPayload(user),
+    action: 'configure',
+    resourceType: 'litellm_model',
+    resourceId: modelAlias,
+    outcome: response.ok ? 'success' : 'failure',
+    metadata: { status: response.status, tier: defaultTier(index) },
   });
 
   if (!response.ok) {
@@ -899,12 +866,29 @@ app.get('/internal/litellm/secrets/:modelAlias', async (request, response, next)
     const header = request.headers.authorization ?? '';
     const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
     if (!liteLlmSecretBrokerToken || token !== liteLlmSecretBrokerToken) {
+      logAuditEvent({
+        event: 'litellm_secret.read',
+        actor: 'litellm',
+        action: 'read',
+        resourceType: 'litellm_secret',
+        resourceId: request.params.modelAlias,
+        outcome: 'denied',
+      });
       response.status(403).json({ error: 'Forbidden.' });
       return;
     }
 
     const modelAlias = request.params.modelAlias;
-    if (!allowedLiteLlmAliasPattern.test(modelAlias)) {
+    if (!isAllowedLiteLlmAlias(modelAlias)) {
+      logAuditEvent({
+        event: 'litellm_secret.read',
+        actor: 'litellm',
+        action: 'read',
+        resourceType: 'litellm_secret',
+        resourceId: modelAlias,
+        outcome: 'denied',
+        metadata: { reason: 'invalid_alias' },
+      });
       response.status(400).json({ error: 'Model alias is outside the allowed AIssistAInt namespace.' });
       return;
     }
@@ -920,6 +904,14 @@ app.get('/internal/litellm/secrets/:modelAlias', async (request, response, next)
     const secretData = secretRecord?.data?.data ?? {};
     const value = decryptProviderToken(secretData, providerTokenAad(secretPathForAlias));
     log('LiteLLM secret broker request', { modelAlias, status: 200 });
+    logAuditEvent({
+      event: 'litellm_secret.read',
+      actor: 'litellm',
+      action: 'read',
+      resourceType: 'litellm_secret',
+      resourceId: modelAlias,
+      outcome: 'success',
+    });
     response.json({ value });
   } catch (error) {
     next(error);
@@ -1096,6 +1088,15 @@ app.delete('/api/projects/:id', requireAuth, requireProjectDeletionRole, async (
       await client.query('DELETE FROM projects WHERE id = $1', [id]);
       await client.query('COMMIT');
       log('DELETE /api/projects/:id', { id, bucketName: project.bucketName });
+      logAuditEvent({
+        event: 'project.delete',
+        actor: userSubject(request),
+        action: 'delete',
+        resourceType: 'project',
+        resourceId: id,
+        outcome: 'success',
+        metadata: { bucketName: project.bucketName, status: 'deleted' },
+      });
       response.status(204).send();
     } catch (error) {
       await client.query('ROLLBACK');
@@ -1192,6 +1193,18 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
       count: savedConfigs.length,
       secretNames: savedConfigs.map((config) => config.secretName),
     });
+    logAuditEvent({
+      event: 'llm_config.save',
+      actor: userSubject(request),
+      action: 'save',
+      resourceType: 'llm_config',
+      outcome: 'success',
+      metadata: {
+        count: savedConfigs.length,
+        tiers: savedConfigs.map((config) => config.tier),
+        states: savedConfigs.map((config) => config.secretLeaseStatus ?? 'unknown'),
+      },
+    });
     response.json({ configs: savedConfigs });
   } catch (error) {
     next(error);
@@ -1207,6 +1220,15 @@ app.post('/api/llm-config/test', requireAuth, async (request, response, next) =>
       modelAlias: llmConfig.modelAlias,
     });
     await callLlmChatEndpoint(llmConfig, 'Reply with only: ok');
+    logAuditEvent({
+      event: 'llm_config.test',
+      actor: userSubject(request),
+      action: 'test',
+      resourceType: 'llm_config',
+      resourceId: llmConfig.modelAlias,
+      outcome: 'success',
+      metadata: { tier: llmConfig.tier, index: llmConfig.index + 1 },
+    });
     response.json({
       status: 'success',
       message: `Connection test succeeded for ${llmConfig.name}.`,
@@ -1233,6 +1255,15 @@ app.post('/api/llm-config/chat', requireAuth, async (request, response, next) =>
       questionLength: question.length,
     });
     const body = await callLlmChatEndpoint(llmConfig, question);
+    logAuditEvent({
+      event: 'llm_config.chat',
+      actor: userSubject(request),
+      action: 'chat',
+      resourceType: 'llm_config',
+      resourceId: llmConfig.modelAlias,
+      outcome: 'success',
+      metadata: { tier: llmConfig.tier, index: llmConfig.index + 1, questionLength: question.length },
+    });
     response.json({
       answer: extractLlmAnswer(body),
     });
@@ -1255,6 +1286,14 @@ app.delete('/api/llm-config/secrets', requireAuth, async (request, response, nex
     );
 
     log('DELETE /api/llm-config/secrets complete');
+    logAuditEvent({
+      event: 'llm_config.secrets_delete',
+      actor: userSubject(request),
+      action: 'delete',
+      resourceType: 'llm_config',
+      outcome: 'success',
+      metadata: { count: llmEndpointCount },
+    });
     response.status(204).send();
   } catch (error) {
     next(error);

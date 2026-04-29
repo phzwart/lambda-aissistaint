@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE_DEFAULT="$HOME/platform-demo/platform-demo.env"
+STACK_NAME="${STACK_NAME:-platform-demo}"
+BASE_DIR="${BASE_DIR:-$HOME/$STACK_NAME}"
+ENV_FILE_DEFAULT="$BASE_DIR/${STACK_NAME}.env"
 ENV_FILE="${ENV_FILE:-$ENV_FILE_DEFAULT}"
 TEMP_PASSWORD=""
 EMAIL=""
@@ -46,7 +48,8 @@ load_env() {
   fi
   # shellcheck disable=SC1090
   . "$ENV_FILE"
-  : "${BASE_DIR:=$HOME/platform-demo}"
+  : "${STACK_NAME:=platform-demo}"
+  : "${BASE_DIR:=$HOME/$STACK_NAME}"
   : "${KEYCLOAK_CONTAINER:?missing in env file}"
   : "${KC_REALM:?missing in env file}"
   : "${KC_ADMIN_USER:?missing in env file}"

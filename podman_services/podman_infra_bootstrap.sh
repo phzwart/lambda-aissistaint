@@ -98,7 +98,6 @@ PUBLIC_MINIO_CONSOLE_URL="${PUBLIC_MINIO_CONSOLE_URL:-https://${MINIO_CONSOLE_PU
 INTERNAL_KEYCLOAK_URL="${INTERNAL_KEYCLOAK_URL:-http://127.0.0.1:8080}"
 INTERNAL_OPENBAO_URL="${INTERNAL_OPENBAO_URL:-http://127.0.0.1:8200}"
 INTERNAL_MINIO_ENDPOINT="${INTERNAL_MINIO_ENDPOINT:-http://127.0.0.1:9000}"
-INTERNAL_MINIO_CONSOLE_URL="${INTERNAL_MINIO_CONSOLE_URL:-http://127.0.0.1:9001}"
 INTERNAL_LITELLM_URL="${INTERNAL_LITELLM_URL:-http://127.0.0.1:${LITELLM_PORT}}"
 GATEWAY_KEYCLOAK_UPSTREAM="${GATEWAY_KEYCLOAK_UPSTREAM:-http://${KEYCLOAK_CONTAINER}:8080}"
 GATEWAY_OPENBAO_UPSTREAM="${GATEWAY_OPENBAO_UPSTREAM:-http://${OPENBAO_CONTAINER}:8200}"
@@ -446,7 +445,6 @@ PUBLIC_MINIO_CONSOLE_URL=$PUBLIC_MINIO_CONSOLE_URL
 INTERNAL_KEYCLOAK_URL=$INTERNAL_KEYCLOAK_URL
 INTERNAL_OPENBAO_URL=$INTERNAL_OPENBAO_URL
 INTERNAL_MINIO_ENDPOINT=$INTERNAL_MINIO_ENDPOINT
-INTERNAL_MINIO_CONSOLE_URL=$INTERNAL_MINIO_CONSOLE_URL
 INTERNAL_LITELLM_URL=$INTERNAL_LITELLM_URL
 GATEWAY_KEYCLOAK_UPSTREAM=$GATEWAY_KEYCLOAK_UPSTREAM
 GATEWAY_OPENBAO_UPSTREAM=$GATEWAY_OPENBAO_UPSTREAM
@@ -1540,12 +1538,36 @@ Service management:
   MinIO managed:          $MANAGE_MINIO
   LiteLLM managed:        $MANAGE_LITELLM
 
-TLS note:
-  For trusted browser sessions, import the local CA root into your OS/browser trust store after Caddy starts.
+Next steps:
+  1. Trust the local TLS CA for browser access.
+     Import this CA root into your OS/browser trust store:
+       $CADDY_DATA_DIR/caddy/pki/authorities/local/root.crt
 
-Next step:
-  Use the admin helper script to add users.
-  New users should get a temporary password and be forced to change it on first login.
+  2. Start the AIssistAInt app from the repo root:
+       PLATFORM_ENV_FILE="$RUNTIME_ENV_FILE" npm run dev
+
+     If the UI still runs in mock mode, copy .env.example to .env.local and set:
+       VITE_USE_MOCK_SERVICES=false
+       PLATFORM_ENV_FILE=$RUNTIME_ENV_FILE
+
+  3. Add admin or user accounts with the Keycloak helper:
+       podman_services/keycloak_user_admin.sh --env-file "$ENV_FILE" add alice --email alice@example.org --print-password
+
+     New users should receive temporary passwords and change them on first login.
+     Generated passwords are recorded in:
+       $PASSWORD_OUT_FILE
+
+  4. Open the app and finish admin configuration:
+       $PUBLIC_APP_URL
+
+     Sign in, open Preferences, configure provider endpoints/models for each LLM tier,
+     and keep provider API keys in the Preferences/OpenBao flow rather than repo env files.
+
+  5. Review operator guidance:
+       README.md
+       docs/ai-governance/SYSTEM_INVENTORY.md
+       docs/ai-governance/RISK_REGISTER.md
+       docs/ai-governance/INCIDENT_RESPONSE.md
 SUMMARY
 }
 
