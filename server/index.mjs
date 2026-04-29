@@ -9,7 +9,9 @@ import cors from 'cors';
 import express from 'express';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { randomUUID } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
 import { existsSync, readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import pg from 'pg';
@@ -45,18 +47,33 @@ const issuer = `${keycloakPublicUrl}/realms/${keycloakRealm}`;
 const jwks = createRemoteJWKSet(new URL(`${keycloakInternalUrl}/realms/${keycloakRealm}/protocol/openid-connect/certs`));
 
 const openBaoUrl = process.env.INTERNAL_OPENBAO_URL ?? process.env.VITE_OPENBAO_URL ?? 'http://127.0.0.1:8200';
-const openBaoToken = process.env.OPENBAO_ROOT_TOKEN;
+const openBaoToken = process.env.OPENBAO_APP_TOKEN ?? process.env.OPENBAO_ROOT_TOKEN;
 const openBaoKvMount = process.env.OPENBAO_KV_MOUNT ?? 'secret';
 const openBaoPrefix = process.env.OPENBAO_RW_PREFIX ?? 'app-tokens';
 const appDatabaseUrl = process.env.APP_DATABASE_URL ?? '';
 const minioEndpoint = process.env.INTERNAL_MINIO_ENDPOINT ?? process.env.MINIO_ENDPOINT ?? 'http://127.0.0.1:9000';
-const minioRootUser = process.env.MINIO_ROOT_USER ?? '';
-const minioRootPassword = process.env.MINIO_ROOT_PASSWORD ?? '';
+const minioAccessKey = process.env.MINIO_APP_ACCESS_KEY ?? process.env.MINIO_ROOT_USER ?? '';
+const minioSecretKey = process.env.MINIO_APP_SECRET_KEY ?? process.env.MINIO_ROOT_PASSWORD ?? '';
 const minioRemovalPolicyName = process.env.MINIO_REMOVAL_POLICY_NAME ?? 'project-removal-rw';
 const projectBucketPrefix = process.env.PROJECT_BUCKET_PREFIX ?? 'aissistaint-project';
 const projectLoadedPrefix = process.env.PROJECT_LOADED_PREFIX ?? 'loaded';
 const projectParsedPrefix = process.env.PROJECT_PARSED_PREFIX ?? 'parsed';
 const projectMetadataObjectKey = process.env.PROJECT_METADATA_OBJECT_KEY ?? 'project.json';
+const publicAppUrl = process.env.PUBLIC_APP_URL ?? 'https://aissistaint.localhost:8443';
+const allowedOrigins = new Set(
+  (process.env.CORS_ALLOWED_ORIGINS ?? `${publicAppUrl},http://localhost:5173,http://127.0.0.1:5173`)
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+const allowedLlmHosts = new Set(
+  (process.env.LLM_ALLOWED_HOSTS ?? 'api.cborg.lbl.gov')
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean),
+);
+const allowPrivateLlmEndpoints = process.env.LLM_ALLOW_PRIVATE_ENDPOINTS === 'true';
+const llmRequestTimeoutMs = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?? '30000', 10);
 const llmTiers = (process.env.VITE_LLM_TIERS ?? 'high,medium,low')
   .split(',')
   .map((tier) => tier.trim().toLowerCase())
@@ -65,7 +82,7 @@ const configuredLlmTiers = llmTiers.length > 0 ? llmTiers : ['high', 'medium', '
 const llmEndpointCount = configuredLlmTiers.length;
 
 if (!openBaoToken) {
-  console.warn('OPENBAO_ROOT_TOKEN is not set. OpenBao API calls will fail until the platform env file is available.');
+  console.warn('OPENBAO_APP_TOKEN or OPENBAO_ROOT_TOKEN is not set. OpenBao API calls will fail until a scoped app token is available.');
 }
 
 if (!appDatabaseUrl) {
@@ -74,30 +91,81 @@ if (!appDatabaseUrl) {
 
 const projectDb = appDatabaseUrl ? new pg.Pool({ connectionString: appDatabaseUrl }) : null;
 const minioClient =
-  minioRootUser && minioRootPassword
+  minioAccessKey && minioSecretKey
     ? new S3Client({
         endpoint: minioEndpoint,
         region: 'us-east-1',
         forcePathStyle: true,
         credentials: {
-          accessKeyId: minioRootUser,
-          secretAccessKey: minioRootPassword,
+          accessKeyId: minioAccessKey,
+          secretAccessKey: minioSecretKey,
         },
       })
     : null;
 let projectDbReady = false;
+let projectDbInitPromise = null;
 
 if (!minioClient) {
-  console.warn('MINIO_ROOT_USER or MINIO_ROOT_PASSWORD is not set. Project bucket creation will fail.');
+  console.warn('MINIO_APP_ACCESS_KEY/MINIO_APP_SECRET_KEY or MinIO root credentials are not set. Project bucket creation will fail.');
 }
 
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+app.use(
+  cors({
+    credentials: true,
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.has(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error('CORS origin is not allowed.'));
+    },
+  }),
+);
 app.use(express.json({ limit: '1mb' }));
 
 const log = (message, details = {}) => {
   const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : '';
   console.log(`[${new Date().toISOString()}] ${message}${suffix}`);
+};
+
+const userRoles = (payload = {}) => {
+  const realmRoles = Array.isArray(payload.realm_access?.roles) ? payload.realm_access.roles : [];
+  const clientRoles = Array.isArray(payload.resource_access?.[keycloakClientId]?.roles)
+    ? payload.resource_access[keycloakClientId].roles
+    : [];
+  const groups = Array.isArray(payload.groups) ? payload.groups : [];
+  return new Set([...realmRoles, ...clientRoles, ...groups].map((role) => String(role).replace(/^\//, '').toLowerCase()));
+};
+
+const hasAnyRole = (payload, roles) => {
+  const assignedRoles = userRoles(payload);
+  return roles.some((role) => assignedRoles.has(role));
+};
+
+const isAdmin = (payload) => hasAnyRole(payload, ['aissistaint-admin', 'admin', 'administrator']);
+const isRemovalAgent = (payload) => hasAnyRole(payload, ['removal-agent', 'removal-agents']);
+
+const requireAdmin = (request, response, next) => {
+  if (isAdmin(request.user)) {
+    next();
+    return;
+  }
+  response.status(403).json({ error: 'Administrator access is required.' });
+};
+
+const requireProjectDeletionRole = (request, response, next) => {
+  if (isAdmin(request.user) || isRemovalAgent(request.user)) {
+    next();
+    return;
+  }
+  response.status(403).json({ error: 'Administrator or removal-agent access is required.' });
+};
+
+const forbidden = (message = 'You do not have access to this project.') => {
+  const error = new Error(message);
+  error.status = 403;
+  return error;
 };
 
 const jsonResponse = async (response) => {
@@ -135,10 +203,53 @@ const requireAuth = async (request, response, next) => {
     request.user = payload;
     next();
   } catch (error) {
+    log('Invalid Keycloak token', { detail: error instanceof Error ? error.message : 'Unknown verification error.' });
     response.status(401).json({
       error: 'Invalid Keycloak token.',
-      detail: error instanceof Error ? error.message : 'Unknown verification error.',
     });
+  }
+};
+
+const initializeProjectDb = async () => {
+  const client = await projectDb.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(424242001)');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id uuid PRIMARY KEY,
+        name text NOT NULL CHECK (length(trim(name)) > 0),
+        description text NOT NULL DEFAULT '',
+        status text NOT NULL DEFAULT 'active',
+        bucket_name text,
+        loaded_prefix text NOT NULL DEFAULT 'loaded',
+        parsed_prefix text NOT NULL DEFAULT 'parsed',
+        metadata_object_key text NOT NULL DEFAULT 'project.json',
+        created_by text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS bucket_name text');
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS loaded_prefix text NOT NULL DEFAULT 'loaded'`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS parsed_prefix text NOT NULL DEFAULT 'parsed'`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS metadata_object_key text NOT NULL DEFAULT 'project.json'`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS project_members (
+        project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        user_subject text NOT NULL,
+        role text NOT NULL DEFAULT 'owner',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (project_id, user_subject)
+      )
+    `);
+    await client.query('COMMIT');
+    projectDbReady = true;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 };
 
@@ -151,35 +262,11 @@ const requireProjectDb = async () => {
     return projectDb;
   }
 
-  await projectDb.query(`
-    CREATE TABLE IF NOT EXISTS projects (
-      id uuid PRIMARY KEY,
-      name text NOT NULL CHECK (length(trim(name)) > 0),
-      description text NOT NULL DEFAULT '',
-      status text NOT NULL DEFAULT 'active',
-      bucket_name text,
-      loaded_prefix text NOT NULL DEFAULT 'loaded',
-      parsed_prefix text NOT NULL DEFAULT 'parsed',
-      metadata_object_key text NOT NULL DEFAULT 'project.json',
-      created_by text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  await projectDb.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS bucket_name text');
-  await projectDb.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS loaded_prefix text NOT NULL DEFAULT 'loaded'`);
-  await projectDb.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS parsed_prefix text NOT NULL DEFAULT 'parsed'`);
-  await projectDb.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS metadata_object_key text NOT NULL DEFAULT 'project.json'`);
-  await projectDb.query(`
-    CREATE TABLE IF NOT EXISTS project_members (
-      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      user_subject text NOT NULL,
-      role text NOT NULL DEFAULT 'owner',
-      created_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (project_id, user_subject)
-    )
-  `);
-  projectDbReady = true;
+  projectDbInitPromise ??= initializeProjectDb().catch((error) => {
+    projectDbInitPromise = null;
+    throw error;
+  });
+  await projectDbInitPromise;
   return projectDb;
 };
 
@@ -198,6 +285,30 @@ const toProject = (row) => ({
 });
 
 const userSubject = (request) => String(request.user?.sub ?? request.user?.preferred_username ?? 'unknown-user');
+
+const getProjectRole = async (client, projectId, request) => {
+  if (isAdmin(request.user) || isRemovalAgent(request.user)) {
+    return 'admin';
+  }
+
+  const result = await client.query(
+    `
+      SELECT role
+      FROM project_members
+      WHERE project_id = $1 AND user_subject = $2
+    `,
+    [projectId, userSubject(request)],
+  );
+  return result.rows[0]?.role ?? null;
+};
+
+const requireProjectRole = async (client, projectId, request, allowedRoles = ['owner', 'editor']) => {
+  const role = await getProjectRole(client, projectId, request);
+  if (!role || (role !== 'admin' && !allowedRoles.includes(role))) {
+    throw forbidden();
+  }
+  return role;
+};
 
 const normalizeBucketSegment = (value) =>
   value
@@ -353,9 +464,13 @@ const openBaoFetchOptional = async (path, init = {}) => {
   }
 };
 
-const secretPath = (index) => `${openBaoPrefix}/llm/endpoints/${index + 1}`;
-const dataApiPath = (index) => `/v1/${openBaoKvMount}/data/${secretPath(index)}`;
-const metadataApiPath = (index) => `/v1/${openBaoKvMount}/metadata/${secretPath(index)}`;
+const secretUserSegment = (user) =>
+  encodeURIComponent(String(user?.sub ?? user?.preferred_username ?? 'unknown-user')).replace(/[!'()*]/g, (char) =>
+    `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+const secretPath = (user, index) => `${openBaoPrefix}/users/${secretUserSegment(user)}/llm/endpoints/${index + 1}`;
+const dataApiPath = (user, index) => `/v1/${openBaoKvMount}/data/${secretPath(user, index)}`;
+const metadataApiPath = (user, index) => `/v1/${openBaoKvMount}/metadata/${secretPath(user, index)}`;
 
 const defaultTier = (index) => configuredLlmTiers[index] ?? 'medium';
 const systemLlmName = (index) => `LLM_${defaultTier(index)}`;
@@ -381,6 +496,57 @@ const chatCompletionsUrl = (baseUrl) => {
   return `${trimmed}/chat/completions`;
 };
 
+const isPrivateAddress = (address) => {
+  if (address === '::1' || address === '0:0:0:0:0:0:0:1') {
+    return true;
+  }
+
+  if (address.startsWith('fe80:') || address.startsWith('fc') || address.startsWith('fd')) {
+    return true;
+  }
+
+  const parts = address.split('.').map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) {
+    return false;
+  }
+
+  const [a, b] = parts;
+  return (
+    a === 10 ||
+    a === 127 ||
+    a === 0 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
+};
+
+const validateLlmEndpoint = async (baseUrl) => {
+  let parsed;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error('LLM base URL must be a valid URL.');
+  }
+
+  if (!['https:', 'http:'].includes(parsed.protocol)) {
+    throw new Error('LLM base URL must use http or https.');
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (allowedLlmHosts.size > 0 && !allowedLlmHosts.has(hostname)) {
+    throw new Error(`LLM host ${hostname} is not allowed.`);
+  }
+
+  if (!allowPrivateLlmEndpoints) {
+    const addresses = isIP(hostname) ? [{ address: hostname }] : await lookup(hostname, { all: true });
+    if (addresses.some(({ address }) => isPrivateAddress(address))) {
+      throw new Error('LLM endpoint cannot resolve to a private or loopback address.');
+    }
+  }
+};
+
 const indexFromConfig = (config) => {
   const source = `${config.secretName ?? ''} ${config.id ?? ''}`;
   const match = source.match(/endpoints\/(\d+)|openbao-llm-(\d+)/);
@@ -388,9 +554,9 @@ const indexFromConfig = (config) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed - 1 : 0;
 };
 
-const loadRunnableLlmConfig = async (config) => {
+const loadRunnableLlmConfig = async (user, config) => {
   const index = Math.min(indexFromConfig(config), llmEndpointCount - 1);
-  const existingSecret = await openBaoFetchOptional(dataApiPath(index));
+  const existingSecret = await openBaoFetchOptional(dataApiPath(user, index));
   const existingData = existingSecret?.data?.data ?? {};
   const endpoint = config.endpoint || existingData.endpoint || '';
   const model = config.model || existingData.model || '';
@@ -399,6 +565,8 @@ const loadRunnableLlmConfig = async (config) => {
   if (!endpoint.startsWith('http')) {
     throw new Error('LLM base URL must start with http:// or https://.');
   }
+
+  await validateLlmEndpoint(endpoint);
 
   if (!model) {
     throw new Error('No model is configured for this endpoint.');
@@ -420,8 +588,11 @@ const loadRunnableLlmConfig = async (config) => {
 
 const callLlmChatEndpoint = async ({ endpoint, model, token }, question) => {
   const url = chatCompletionsUrl(endpoint);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
   const response = await fetch(url, {
     method: 'POST',
+    signal: controller.signal,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -437,7 +608,7 @@ const callLlmChatEndpoint = async ({ endpoint, model, token }, question) => {
       max_tokens: 128,
       temperature: 0,
     }),
-  });
+  }).finally(() => clearTimeout(timeout));
   const body = await jsonResponse(response);
   log('LLM endpoint request', {
     endpoint: url,
@@ -459,13 +630,13 @@ const extractLlmAnswer = (body) =>
   body.response ??
   JSON.stringify(body);
 
-const toLlmConfig = async (index) => {
-  const path = secretPath(index);
+const toLlmConfig = async (user, index) => {
+  const path = secretPath(user, index);
 
   try {
     const [secret, metadata] = await Promise.all([
-      openBaoFetchOptional(dataApiPath(index)),
-      openBaoFetchOptional(metadataApiPath(index)),
+      openBaoFetchOptional(dataApiPath(user, index)),
+      openBaoFetchOptional(metadataApiPath(user, index)),
     ]);
     if (!secret && !metadata) {
       return {
@@ -518,6 +689,10 @@ const toLlmConfig = async (index) => {
 };
 
 app.get('/api/health', (_request, response) => {
+  response.json({ ok: true });
+});
+
+app.get('/api/health/details', requireAuth, requireAdmin, (_request, response) => {
   response.json({
     ok: true,
     issuer,
@@ -529,14 +704,26 @@ app.get('/api/health', (_request, response) => {
   });
 });
 
-app.get('/api/projects', requireAuth, async (_request, response, next) => {
+app.get('/api/projects', requireAuth, async (request, response, next) => {
   try {
     const db = await requireProjectDb();
-    const result = await db.query(`
-      SELECT id, name, description, status, bucket_name, loaded_prefix, parsed_prefix, metadata_object_key, created_by, created_at, updated_at
-      FROM projects
-      ORDER BY updated_at DESC, created_at DESC
-    `);
+    const result =
+      isAdmin(request.user) || isRemovalAgent(request.user)
+        ? await db.query(`
+          SELECT id, name, description, status, bucket_name, loaded_prefix, parsed_prefix, metadata_object_key, created_by, created_at, updated_at
+          FROM projects
+          ORDER BY updated_at DESC, created_at DESC
+        `)
+        : await db.query(
+            `
+              SELECT p.id, p.name, p.description, p.status, p.bucket_name, p.loaded_prefix, p.parsed_prefix, p.metadata_object_key, p.created_by, p.created_at, p.updated_at
+              FROM projects p
+              INNER JOIN project_members pm ON pm.project_id = p.id
+              WHERE pm.user_subject = $1
+              ORDER BY p.updated_at DESC, p.created_at DESC
+            `,
+            [userSubject(request)],
+          );
     log('GET /api/projects', { count: result.rowCount });
     response.json({ projects: result.rows.map(toProject) });
   } catch (error) {
@@ -614,6 +801,7 @@ app.patch('/api/projects/:id', requireAuth, async (request, response, next) => {
     const client = await db.connect();
     try {
       await client.query('BEGIN');
+      await requireProjectRole(client, id, request, ['owner', 'editor']);
       const result = await client.query(
         `
           UPDATE projects
@@ -650,7 +838,7 @@ app.patch('/api/projects/:id', requireAuth, async (request, response, next) => {
   }
 });
 
-app.delete('/api/projects/:id', requireAuth, async (request, response, next) => {
+app.delete('/api/projects/:id', requireAuth, requireProjectDeletionRole, async (request, response, next) => {
   try {
     const db = await requireProjectDb();
     const id = request.params.id;
@@ -698,9 +886,9 @@ app.delete('/api/projects/:id', requireAuth, async (request, response, next) => 
   }
 });
 
-app.get('/api/llm-config', requireAuth, async (_request, response) => {
-  log('GET /api/llm-config');
-  const configs = await Promise.all(Array.from({ length: llmEndpointCount }, (_, index) => toLlmConfig(index)));
+app.get('/api/llm-config', requireAuth, async (request, response) => {
+  log('GET /api/llm-config', { subject: userSubject(request) });
+  const configs = await Promise.all(Array.from({ length: llmEndpointCount }, (_, index) => toLlmConfig(request.user, index)));
   log('GET /api/llm-config complete', {
     count: configs.length,
     states: configs.map((config) => config.secretLeaseStatus ?? 'unknown'),
@@ -726,11 +914,11 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
 
     await Promise.all(
       configs.slice(0, llmEndpointCount).map(async (config, index) => {
-        const existingSecret = await openBaoFetchOptional(dataApiPath(index));
+        const existingSecret = await openBaoFetchOptional(dataApiPath(request.user, index));
         const existingData = existingSecret?.data?.data ?? {};
         const nextToken = config.token || existingData.token || '';
 
-        return openBaoFetch(dataApiPath(index), {
+        return openBaoFetch(dataApiPath(request.user, index), {
           method: 'POST',
           body: JSON.stringify({
             data: {
@@ -747,7 +935,7 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
       }),
     );
 
-    const savedConfigs = await Promise.all(Array.from({ length: llmEndpointCount }, (_, index) => toLlmConfig(index)));
+    const savedConfigs = await Promise.all(Array.from({ length: llmEndpointCount }, (_, index) => toLlmConfig(request.user, index)));
     log('POST /api/llm-config complete', {
       count: savedConfigs.length,
       secretNames: savedConfigs.map((config) => config.secretName),
@@ -760,7 +948,7 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
 
 app.post('/api/llm-config/test', requireAuth, async (request, response, next) => {
   try {
-    const llmConfig = await loadRunnableLlmConfig(request.body?.config ?? {});
+    const llmConfig = await loadRunnableLlmConfig(request.user, request.body?.config ?? {});
     log('POST /api/llm-config/test', {
       index: llmConfig.index + 1,
       name: llmConfig.name,
@@ -785,7 +973,7 @@ app.post('/api/llm-config/chat', requireAuth, async (request, response, next) =>
       return;
     }
 
-    const llmConfig = await loadRunnableLlmConfig(request.body?.config ?? {});
+    const llmConfig = await loadRunnableLlmConfig(request.user, request.body?.config ?? {});
     log('POST /api/llm-config/chat', {
       index: llmConfig.index + 1,
       name: llmConfig.name,
@@ -800,13 +988,13 @@ app.post('/api/llm-config/chat', requireAuth, async (request, response, next) =>
   }
 });
 
-app.delete('/api/llm-config/secrets', requireAuth, async (_request, response, next) => {
+app.delete('/api/llm-config/secrets', requireAuth, async (request, response, next) => {
   try {
     log('DELETE /api/llm-config/secrets', { count: llmEndpointCount });
     await Promise.all(
       Array.from({ length: llmEndpointCount }, async (_unused, index) => {
         try {
-          await openBaoFetchOptional(metadataApiPath(index), { method: 'DELETE' });
+          await openBaoFetchOptional(metadataApiPath(request.user, index), { method: 'DELETE' });
         } catch (error) {
           throw error;
         }
@@ -821,8 +1009,13 @@ app.delete('/api/llm-config/secrets', requireAuth, async (_request, response, ne
 });
 
 app.use((error, _request, response, _next) => {
-  response.status(500).json({
-    error: error instanceof Error ? error.message : 'Unexpected API error.',
+  const status = Number.isInteger(error?.status) ? error.status : 500;
+  log('API error', {
+    status,
+    message: error instanceof Error ? error.message : 'Unexpected API error.',
+  });
+  response.status(status).json({
+    error: status >= 500 ? 'Unexpected API error.' : error instanceof Error ? error.message : 'Request failed.',
   });
 });
 
