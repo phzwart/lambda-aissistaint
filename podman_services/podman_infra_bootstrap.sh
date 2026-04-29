@@ -33,6 +33,10 @@ LLM_ALLOWED_HOSTS="${LLM_ALLOWED_HOSTS:-api.cborg.lbl.gov}"
 LLM_ALLOW_PRIVATE_ENDPOINTS="${LLM_ALLOW_PRIVATE_ENDPOINTS:-false}"
 LLM_ALLOW_HTTP_ENDPOINTS="${LLM_ALLOW_HTTP_ENDPOINTS:-false}"
 LLM_REQUEST_TIMEOUT_MS="${LLM_REQUEST_TIMEOUT_MS:-30000}"
+LITELLM_PORT="${LITELLM_PORT:-4000}"
+LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-}"
+LITELLM_ADMIN_KEY="${LITELLM_ADMIN_KEY:-}"
+LITELLM_API_KEY="${LITELLM_API_KEY:-}"
 TLS_GATEWAY_ENABLED="${TLS_GATEWAY_ENABLED:-1}"
 TLS_GATEWAY_PORT="${TLS_GATEWAY_PORT:-8443}"
 TLS_HTTP_PORT="${TLS_HTTP_PORT:-8088}"
@@ -53,6 +57,7 @@ MANAGE_KEYCLOAK="${MANAGE_KEYCLOAK:-1}"
 MANAGE_APP_POSTGRES="${MANAGE_APP_POSTGRES:-1}"
 MANAGE_OPENBAO="${MANAGE_OPENBAO:-1}"
 MANAGE_MINIO="${MANAGE_MINIO:-1}"
+MANAGE_LITELLM="${MANAGE_LITELLM:-1}"
 
 CADDY_IMAGE="${CADDY_IMAGE:-docker.io/library/caddy:2}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-docker.io/library/postgres:16}"
@@ -60,6 +65,7 @@ KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.6.1}"
 OPENBAO_IMAGE="${OPENBAO_IMAGE:-quay.io/openbao/openbao:latest}"
 MINIO_IMAGE="${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-02-18T16-25-55Z}"
 MINIO_MC_IMAGE="${MINIO_MC_IMAGE:-quay.io/minio/mc:latest}"
+LITELLM_IMAGE="${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}"
 
 CADDY_CONTAINER="${STACK_NAME}-gateway"
 POSTGRES_CONTAINER="${STACK_NAME}-postgres"
@@ -67,6 +73,7 @@ APP_POSTGRES_CONTAINER="${STACK_NAME}-app-postgres"
 KEYCLOAK_CONTAINER="${STACK_NAME}-keycloak"
 OPENBAO_CONTAINER="${STACK_NAME}-openbao"
 MINIO_CONTAINER="${STACK_NAME}-minio"
+LITELLM_CONTAINER="${STACK_NAME}-litellm"
 MINIO_CLIENT_ID="${MINIO_CLIENT_ID:-minio-console}"
 OPENBAO_CLIENT_ID="${OPENBAO_CLIENT_ID:-openbao}"
 AISSISTAINT_UI_CLIENT_ID="${AISSISTAINT_UI_CLIENT_ID:-aissistaint-ui}"
@@ -81,6 +88,7 @@ INTERNAL_KEYCLOAK_URL="${INTERNAL_KEYCLOAK_URL:-http://127.0.0.1:8080}"
 INTERNAL_OPENBAO_URL="${INTERNAL_OPENBAO_URL:-http://127.0.0.1:8200}"
 INTERNAL_MINIO_ENDPOINT="${INTERNAL_MINIO_ENDPOINT:-http://127.0.0.1:9000}"
 INTERNAL_MINIO_CONSOLE_URL="${INTERNAL_MINIO_CONSOLE_URL:-http://127.0.0.1:9001}"
+INTERNAL_LITELLM_URL="${INTERNAL_LITELLM_URL:-http://127.0.0.1:${LITELLM_PORT}}"
 GATEWAY_KEYCLOAK_UPSTREAM="${GATEWAY_KEYCLOAK_UPSTREAM:-http://${KEYCLOAK_CONTAINER}:8080}"
 GATEWAY_OPENBAO_UPSTREAM="${GATEWAY_OPENBAO_UPSTREAM:-http://${OPENBAO_CONTAINER}:8200}"
 GATEWAY_MINIO_UPSTREAM="${GATEWAY_MINIO_UPSTREAM:-http://${MINIO_CONTAINER}:9000}"
@@ -121,6 +129,10 @@ MINIO_MC_DIR="$BASE_MINIO_DIR/mc"
 MINIO_POLICY_FILE="$BASE_DIR/${MINIO_POLICY_NAME}.json"
 MINIO_APP_POLICY_FILE="$BASE_DIR/${MINIO_APP_POLICY_NAME}.json"
 MINIO_REMOVAL_POLICY_FILE="$BASE_DIR/${MINIO_REMOVAL_POLICY_NAME}.json"
+BASE_LITELLM_DIR="$BASE_DIR/litellm"
+LITELLM_CONFIG_DIR="$BASE_LITELLM_DIR/config"
+LITELLM_CONFIG_FILE="$LITELLM_CONFIG_DIR/config.yaml"
+LITELLM_SECRET_MANAGER_FILE="$LITELLM_CONFIG_DIR/openbao_secret_manager.py"
 BASE_CADDY_DIR="$BASE_DIR/caddy"
 CADDY_CONFIG_DIR="$BASE_CADDY_DIR/config"
 CADDY_DATA_DIR="$BASE_CADDY_DIR/data"
@@ -297,6 +309,9 @@ initialize_generated_secrets() {
   : "${MINIO_ROOT_PASSWORD:=$(rand_secret)}"
   : "${MINIO_APP_SECRET_KEY:=$(rand_secret)}"
   : "${MINIO_REMOVAL_SECRET_KEY:=$(rand_secret)}"
+  : "${LITELLM_MASTER_KEY:=sk-$(rand_secret)}"
+  : "${LITELLM_ADMIN_KEY:=$LITELLM_MASTER_KEY}"
+  : "${LITELLM_API_KEY:=$LITELLM_MASTER_KEY}"
 }
 
 show_container_logs() {
@@ -333,6 +348,7 @@ MANAGE_KEYCLOAK=$MANAGE_KEYCLOAK
 MANAGE_APP_POSTGRES=$MANAGE_APP_POSTGRES
 MANAGE_OPENBAO=$MANAGE_OPENBAO
 MANAGE_MINIO=$MANAGE_MINIO
+MANAGE_LITELLM=$MANAGE_LITELLM
 TLS_GATEWAY_ENABLED=$TLS_GATEWAY_ENABLED
 TLS_GATEWAY_PORT=$TLS_GATEWAY_PORT
 TLS_HTTP_PORT=$TLS_HTTP_PORT
@@ -353,6 +369,7 @@ INTERNAL_KEYCLOAK_URL=$INTERNAL_KEYCLOAK_URL
 INTERNAL_OPENBAO_URL=$INTERNAL_OPENBAO_URL
 INTERNAL_MINIO_ENDPOINT=$INTERNAL_MINIO_ENDPOINT
 INTERNAL_MINIO_CONSOLE_URL=$INTERNAL_MINIO_CONSOLE_URL
+INTERNAL_LITELLM_URL=$INTERNAL_LITELLM_URL
 GATEWAY_KEYCLOAK_UPSTREAM=$GATEWAY_KEYCLOAK_UPSTREAM
 GATEWAY_OPENBAO_UPSTREAM=$GATEWAY_OPENBAO_UPSTREAM
 GATEWAY_MINIO_UPSTREAM=$GATEWAY_MINIO_UPSTREAM
@@ -376,6 +393,7 @@ OPENBAO_CONTAINER=$OPENBAO_CONTAINER
 OPENBAO_UNSEAL_KEY=${OPENBAO_UNSEAL_KEY:-}
 OPENBAO_ROOT_TOKEN=${OPENBAO_ROOT_TOKEN:-}
 OPENBAO_APP_TOKEN=${OPENBAO_APP_TOKEN:-}
+OPENBAO_LITELLM_TOKEN=${OPENBAO_LITELLM_TOKEN:-}
 MINIO_CONTAINER=$MINIO_CONTAINER
 MINIO_ROOT_USER=$MINIO_ROOT_USER
 MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD
@@ -388,6 +406,11 @@ MINIO_POLICY_NAME=$MINIO_POLICY_NAME
 MINIO_APP_POLICY_NAME=$MINIO_APP_POLICY_NAME
 MINIO_REMOVAL_POLICY_NAME=$MINIO_REMOVAL_POLICY_NAME
 MINIO_ENDPOINT=$MINIO_ENDPOINT
+LITELLM_CONTAINER=$LITELLM_CONTAINER
+LITELLM_PORT=$LITELLM_PORT
+LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY
+LITELLM_ADMIN_KEY=$LITELLM_ADMIN_KEY
+LITELLM_API_KEY=$LITELLM_API_KEY
 PROJECT_BUCKET_PREFIX=$PROJECT_BUCKET_PREFIX
 PROJECT_LOADED_PREFIX=$PROJECT_LOADED_PREFIX
 PROJECT_PARSED_PREFIX=$PROJECT_PARSED_PREFIX
@@ -428,11 +451,14 @@ PUBLIC_MINIO_CONSOLE_URL=$PUBLIC_MINIO_CONSOLE_URL
 INTERNAL_KEYCLOAK_URL=$INTERNAL_KEYCLOAK_URL
 INTERNAL_OPENBAO_URL=$INTERNAL_OPENBAO_URL
 INTERNAL_MINIO_ENDPOINT=$INTERNAL_MINIO_ENDPOINT
+INTERNAL_LITELLM_URL=$INTERNAL_LITELLM_URL
 APP_DATABASE_URL=${APP_DATABASE_URL:-postgres://$APP_POSTGRES_USER:$APP_POSTGRES_PASSWORD@127.0.0.1:$APP_POSTGRES_PORT/$APP_POSTGRES_DB}
 MINIO_ENDPOINT=$MINIO_ENDPOINT
 MINIO_APP_ACCESS_KEY=$MINIO_APP_ACCESS_KEY
 MINIO_APP_SECRET_KEY=$MINIO_APP_SECRET_KEY
 MINIO_REMOVAL_POLICY_NAME=$MINIO_REMOVAL_POLICY_NAME
+LITELLM_API_KEY=$LITELLM_API_KEY
+LITELLM_ADMIN_KEY=$LITELLM_ADMIN_KEY
 PROJECT_BUCKET_PREFIX=$PROJECT_BUCKET_PREFIX
 PROJECT_LOADED_PREFIX=$PROJECT_LOADED_PREFIX
 PROJECT_PARSED_PREFIX=$PROJECT_PARSED_PREFIX
@@ -516,6 +542,82 @@ $PUBLIC_MINIO_CONSOLE_URL {
   reverse_proxy $GATEWAY_MINIO_CONSOLE_UPSTREAM
 }
 CADDY
+}
+
+write_litellm_config() {
+  cat > "$LITELLM_CONFIG_FILE" <<YAML
+model_list: []
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  key_management_system: custom
+  key_management_settings:
+    custom_secret_manager: openbao_secret_manager.OpenBaoSecretManager
+    access_mode: read_only
+
+litellm_settings:
+  drop_params: true
+YAML
+
+  cat > "$LITELLM_SECRET_MANAGER_FILE" <<'PY'
+import json
+import os
+import urllib.error
+import urllib.request
+
+try:
+    from litellm.secret_managers.main import CustomSecretManager
+except Exception:  # pragma: no cover - keeps the module importable across LiteLLM releases
+    class CustomSecretManager:
+        pass
+
+
+class OpenBaoSecretManager(CustomSecretManager):
+    def _read_openbao_secret(self, secret_name):
+        if not secret_name:
+            return None
+
+        if secret_name.startswith("os.environ/"):
+            env_name = secret_name.split("/", 1)[1]
+            env_value = os.environ.get(env_name)
+            if env_value:
+                return env_value
+            secret_name = env_name
+
+        if not secret_name.startswith("openbao://"):
+            return os.environ.get(secret_name)
+
+        reference = secret_name.removeprefix("openbao://")
+        secret_path, _, field = reference.partition("#")
+        field = field or "token"
+
+        openbao_url = os.environ.get("LITELLM_OPENBAO_URL", "http://127.0.0.1:8200").rstrip("/")
+        openbao_token = os.environ.get("LITELLM_OPENBAO_TOKEN")
+        if not openbao_token:
+            return None
+
+        request = urllib.request.Request(
+            f"{openbao_url}/v1/{secret_path.lstrip('/')}",
+            headers={"X-Vault-Token": openbao_token},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            return None
+
+        data = payload.get("data", {})
+        if isinstance(data.get("data"), dict):
+            data = data["data"]
+        value = data.get(field)
+        return value if isinstance(value, str) and value else None
+
+    def sync_read_secret(self, secret_name, optional_params=None, timeout=None):
+        return self._read_openbao_secret(secret_name)
+
+    async def async_read_secret(self, secret_name, optional_params=None, timeout=None):
+        return self._read_openbao_secret(secret_name)
+PY
 }
 
 write_minio_policy() {
@@ -613,18 +715,19 @@ POLICY
 }
 
 prepare_dirs() {
-  mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR"
-  mkdir -p "$BASE_OPENBAO_DIR" "$BASE_MINIO_DIR" "$BASE_KEYCLOAK_DIR" "$BASE_APP_POSTGRES_DIR" "$BASE_CADDY_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR"
+  mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR"
+  mkdir -p "$BASE_OPENBAO_DIR" "$BASE_MINIO_DIR" "$BASE_LITELLM_DIR" "$BASE_KEYCLOAK_DIR" "$BASE_APP_POSTGRES_DIR" "$BASE_CADDY_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR"
   chmod 700 "$BASE_DIR" "$BASE_OPENBAO_DIR" 2>/dev/null || true
 
   if [[ "$CLEAN_DATA" == "1" ]]; then
     warn "CLEAN_DATA=1 set. Removing data under $BASE_DIR"
-    rm -rf "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$OPENBAO_INIT_FILE" "$ENV_FILE" "$RUNTIME_ENV_FILE" "$KEYCLOAK_SECRETS_OUT" "$MINIO_POLICY_FILE" "$MINIO_APP_POLICY_FILE" "$MINIO_REMOVAL_POLICY_FILE"
-    mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR"
+    rm -rf "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$OPENBAO_INIT_FILE" "$ENV_FILE" "$RUNTIME_ENV_FILE" "$KEYCLOAK_SECRETS_OUT" "$MINIO_POLICY_FILE" "$MINIO_APP_POLICY_FILE" "$MINIO_REMOVAL_POLICY_FILE"
+    mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR"
   fi
 
   write_openbao_config
   write_caddyfile
+  write_litellm_config
   write_minio_policy
   write_minio_app_policy
   write_minio_removal_policy
@@ -645,6 +748,7 @@ pull_images() {
   [[ "$MANAGE_KEYCLOAK" == "1" ]] && podman pull "$KEYCLOAK_IMAGE" >/dev/null
   [[ "$MANAGE_OPENBAO" == "1" ]] && podman pull "$OPENBAO_IMAGE" >/dev/null
   [[ "$MANAGE_MINIO" == "1" ]] && podman pull "$MINIO_IMAGE" >/dev/null
+  [[ "$MANAGE_LITELLM" == "1" ]] && podman pull "$LITELLM_IMAGE" >/dev/null
   podman pull "$MINIO_MC_IMAGE" >/dev/null
 }
 
@@ -659,10 +763,11 @@ start_infra() {
 
   pull_images
 
-  for c in "$CADDY_CONTAINER" "$MINIO_CONTAINER" "$OPENBAO_CONTAINER" "$KEYCLOAK_CONTAINER" "$APP_POSTGRES_CONTAINER" "$POSTGRES_CONTAINER"; do
+  for c in "$CADDY_CONTAINER" "$LITELLM_CONTAINER" "$MINIO_CONTAINER" "$OPENBAO_CONTAINER" "$KEYCLOAK_CONTAINER" "$APP_POSTGRES_CONTAINER" "$POSTGRES_CONTAINER"; do
     local manage_container=1
     case "$c" in
       "$CADDY_CONTAINER") manage_container="$MANAGE_TLS_GATEWAY" ;;
+      "$LITELLM_CONTAINER") manage_container="$MANAGE_LITELLM" ;;
       "$MINIO_CONTAINER") manage_container="$MANAGE_MINIO" ;;
       "$OPENBAO_CONTAINER") manage_container="$MANAGE_OPENBAO" ;;
       "$KEYCLOAK_CONTAINER") manage_container="$MANAGE_KEYCLOAK" ;;
@@ -679,11 +784,13 @@ start_infra() {
   local keycloak_ports=()
   local openbao_ports=()
   local minio_ports=()
+  local litellm_ports=()
   if [[ "$EXPOSE_RAW_SERVICE_PORTS" == "1" ]]; then
     app_postgres_ports=(-p "127.0.0.1:${APP_POSTGRES_PORT}:5432")
     keycloak_ports=(-p 127.0.0.1:8080:8080)
     openbao_ports=(-p 127.0.0.1:8200:8200 -p 127.0.0.1:8201:8201)
     minio_ports=(-p 127.0.0.1:9000:9000 -p 127.0.0.1:9001:9001)
+    litellm_ports=(-p "127.0.0.1:${LITELLM_PORT}:4000")
   fi
 
   if [[ "$MANAGE_KEYCLOAK_POSTGRES" == "1" ]]; then
@@ -798,6 +905,38 @@ start_infra() {
   if [[ "$TLS_GATEWAY_ENABLED" == "1" && "$MANAGE_TLS_GATEWAY" == "1" ]]; then
     assert_container_running "$CADDY_CONTAINER"
   fi
+}
+
+start_litellm() {
+  if [[ "$MANAGE_LITELLM" != "1" ]]; then
+    info "Skipping managed LiteLLM setup (MANAGE_LITELLM=$MANAGE_LITELLM)"
+    return 0
+  fi
+
+  local litellm_ports=()
+  if [[ "$EXPOSE_RAW_SERVICE_PORTS" == "1" ]]; then
+    litellm_ports=(-p "127.0.0.1:${LITELLM_PORT}:4000")
+  fi
+
+  if container_exists "$LITELLM_CONTAINER"; then
+    info "Removing existing container $LITELLM_CONTAINER"
+    podman rm -f "$LITELLM_CONTAINER" >/dev/null || true
+  fi
+
+  info "Starting LiteLLM"
+  podman run -d \
+    --name "$LITELLM_CONTAINER" \
+    --network "$NETWORK_NAME" \
+    "${litellm_ports[@]}" \
+    -v "$LITELLM_CONFIG_FILE:/app/config.yaml:Z,ro" \
+    -v "$LITELLM_SECRET_MANAGER_FILE:/app/openbao_secret_manager.py:Z,ro" \
+    -e LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY" \
+    -e LITELLM_OPENBAO_URL="http://${OPENBAO_CONTAINER}:8200" \
+    -e LITELLM_OPENBAO_TOKEN="${OPENBAO_LITELLM_TOKEN:-}" \
+    "$LITELLM_IMAGE" \
+    --config /app/config.yaml --host 0.0.0.0 --port 4000 >/dev/null
+
+  assert_container_running "$LITELLM_CONTAINER"
 }
 
 configure_keycloak() {
@@ -1154,8 +1293,16 @@ path \"$OPENBAO_KV_MOUNT/metadata/$OPENBAO_RW_PREFIX/*\" {
 }
 POLICY
 
+    cat >/tmp/litellm-llm-read.hcl <<POLICY
+path \"$OPENBAO_KV_MOUNT/data/$OPENBAO_RW_PREFIX/users/*/llm/endpoints/*\" {
+  capabilities = [\"read\"]
+}
+POLICY
+
     bao policy write app-tokens-rw /tmp/app-tokens-rw.hcl >/dev/null
+    bao policy write litellm-llm-read /tmp/litellm-llm-read.hcl >/dev/null
     bao token create -policy=app-tokens-rw -field=token > /tmp/openbao-app-token
+    bao token create -policy=litellm-llm-read -field=token > /tmp/openbao-litellm-token
 
     bao write auth/oidc/role/default \
       role_type='oidc' \
@@ -1170,10 +1317,15 @@ POLICY
 
   local app_token
   app_token="$(podman exec "$OPENBAO_CONTAINER" sh -lc 'cat /tmp/openbao-app-token')"
+  local litellm_token
+  litellm_token="$(podman exec "$OPENBAO_CONTAINER" sh -lc 'cat /tmp/openbao-litellm-token')"
   if [[ -n "$app_token" ]]; then
     OPENBAO_APP_TOKEN="$app_token"
-    write_runtime_env "$MINIO_CLIENT_SECRET" "$OPENBAO_CLIENT_SECRET"
   fi
+  if [[ -n "$litellm_token" ]]; then
+    OPENBAO_LITELLM_TOKEN="$litellm_token"
+  fi
+  write_runtime_env "$MINIO_CLIENT_SECRET" "$OPENBAO_CLIENT_SECRET"
 }
 
 print_summary() {
@@ -1191,6 +1343,7 @@ Admin endpoints:
   MinIO console:          $PUBLIC_MINIO_CONSOLE_URL
   MinIO endpoint:         $PUBLIC_MINIO_URL
   OpenBao UI:             $PUBLIC_OPENBAO_URL/ui
+  LiteLLM proxy:          $INTERNAL_LITELLM_URL
 
 Important local files:
   Admin/bootstrap env:    $ENV_FILE
@@ -1208,6 +1361,7 @@ Containers:
   $KEYCLOAK_CONTAINER
   $OPENBAO_CONTAINER
   $MINIO_CONTAINER
+  $LITELLM_CONTAINER
 
 Realm and access model:
   Realm:                  $KC_REALM
@@ -1229,6 +1383,7 @@ Service management:
   App Postgres managed:   $MANAGE_APP_POSTGRES
   OpenBao managed:        $MANAGE_OPENBAO
   MinIO managed:          $MANAGE_MINIO
+  LiteLLM managed:        $MANAGE_LITELLM
 
 TLS note:
   For trusted browser sessions, import the local CA root into your OS/browser trust store after Caddy starts.
@@ -1260,6 +1415,7 @@ main() {
   configure_keycloak
   configure_minio
   configure_openbao
+  start_litellm
   print_summary
 }
 

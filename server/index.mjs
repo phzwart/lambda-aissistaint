@@ -78,6 +78,9 @@ const allowedLlmHosts = new Set(
 const allowPrivateLlmEndpoints = process.env.LLM_ALLOW_PRIVATE_ENDPOINTS === 'true';
 const allowHttpLlmEndpoints = process.env.LLM_ALLOW_HTTP_ENDPOINTS === 'true';
 const llmRequestTimeoutMs = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?? '30000', 10);
+const liteLlmUrl = (process.env.INTERNAL_LITELLM_URL ?? 'http://127.0.0.1:4000').replace(/\/+$/g, '');
+const liteLlmApiKey = process.env.LITELLM_API_KEY ?? '';
+const liteLlmAdminKey = process.env.LITELLM_ADMIN_KEY ?? process.env.LITELLM_MASTER_KEY ?? '';
 const llmTiers = (process.env.VITE_LLM_TIERS ?? 'high,medium,low')
   .split(',')
   .map((tier) => tier.trim().toLowerCase())
@@ -91,6 +94,14 @@ if (!openBaoToken) {
 
 if (!appDatabaseUrl) {
   console.warn('APP_DATABASE_URL is not set. Project API calls will fail until the app database is configured.');
+}
+
+if (!liteLlmApiKey) {
+  console.warn('LITELLM_API_KEY is not set. LLM test/chat calls will fail until LiteLLM proxy credentials are configured.');
+}
+
+if (!liteLlmAdminKey) {
+  console.warn('LITELLM_ADMIN_KEY is not set. Saving LLM provider configuration will not be able to update LiteLLM model aliases.');
 }
 
 if (process.env.NODE_ENV === 'production' && allowPrivateLlmEndpoints) {
@@ -492,6 +503,14 @@ const metadataApiPath = (user, index) => `/v1/${openBaoKvMount}/metadata/${secre
 
 const defaultTier = (index) => configuredLlmTiers[index] ?? 'medium';
 const systemLlmName = (index) => `LLM_${defaultTier(index)}`;
+const liteLlmSafeSegment = (value) =>
+  String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'unknown-user';
+const liteLlmModelAlias = (user, index) => `aissistaint-${liteLlmSafeSegment(user?.sub ?? user?.preferred_username)}-${defaultTier(index)}`;
+const liteLlmSecretReference = (user, index) => `openbao://${openBaoKvMount}/data/${secretPath(user, index)}#token`;
 
 const tokenPreview = (token) => {
   if (!token) {
@@ -578,10 +597,10 @@ const loadRunnableLlmConfig = async (user, config) => {
   const existingData = existingSecret?.data?.data ?? {};
   const endpoint = config.endpoint || existingData.endpoint || '';
   const model = config.model || existingData.model || '';
-  const token = config.token || existingData.token || '';
+  const hasToken = Boolean(config.token || existingData.token);
 
   if (!endpoint.startsWith('http')) {
-    throw new Error('LLM base URL must start with http:// or https://.');
+    throw new Error('Provider base URL must start with http:// or https://.');
   }
 
   await validateLlmEndpoint(endpoint);
@@ -590,22 +609,60 @@ const loadRunnableLlmConfig = async (user, config) => {
     throw new Error('No model is configured for this endpoint.');
   }
 
-  if (!token) {
-    throw new Error('No API token is available in the input or OpenBao for this endpoint.');
+  if (!hasToken) {
+    throw new Error('No provider API key is available in OpenBao for this LiteLLM model.');
   }
 
   return {
     index,
     endpoint,
     model,
-    token,
+    modelAlias: existingData.modelAlias || liteLlmModelAlias(user, index),
     name: systemLlmName(index),
     tier: defaultTier(index),
   };
 };
 
-const callLlmChatEndpoint = async ({ endpoint, model, token }, question) => {
-  const url = chatCompletionsUrl(endpoint);
+const configureLiteLlmModel = async (user, index, { endpoint, model }) => {
+  if (!liteLlmAdminKey) {
+    throw new Error('LiteLLM admin key is not configured on the backend.');
+  }
+
+  const modelAlias = liteLlmModelAlias(user, index);
+  const response = await fetch(`${liteLlmUrl}/model/new`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${liteLlmAdminKey}`,
+    },
+    body: JSON.stringify({
+      model_name: modelAlias,
+      litellm_params: {
+        model,
+        api_base: endpoint,
+        api_key: liteLlmSecretReference(user, index),
+      },
+    }),
+  });
+  const body = await jsonResponse(response);
+  log('LiteLLM model configuration request', {
+    modelAlias,
+    status: response.status,
+  });
+
+  if (!response.ok) {
+    throw new Error(body.error?.message ?? body.error ?? body.raw ?? `LiteLLM model configuration failed with ${response.status}`);
+  }
+
+  return modelAlias;
+};
+
+const callLlmChatEndpoint = async ({ modelAlias }, question) => {
+  if (!liteLlmApiKey) {
+    throw new Error('LiteLLM API key is not configured on the backend.');
+  }
+
+  const url = `${liteLlmUrl}/chat/completions`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
   const response = await fetch(url, {
@@ -614,10 +671,10 @@ const callLlmChatEndpoint = async ({ endpoint, model, token }, question) => {
     redirect: 'manual',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${liteLlmApiKey}`,
     },
     body: JSON.stringify({
-      model,
+      model: modelAlias,
       messages: [
         {
           role: 'user',
@@ -629,9 +686,9 @@ const callLlmChatEndpoint = async ({ endpoint, model, token }, question) => {
     }),
   }).finally(() => clearTimeout(timeout));
   const body = await jsonResponse(response);
-  log('LLM endpoint request', {
-    endpoint: url,
-    model,
+  log('LiteLLM chat request', {
+    endpoint: liteLlmUrl,
+    modelAlias,
     status: response.status,
   });
 
@@ -666,6 +723,7 @@ const toLlmConfig = async (user, index) => {
         name: systemLlmName(index),
         endpoint: '',
         model: '',
+        modelAlias: liteLlmModelAlias(user, index),
         token: '',
         tier: defaultTier(index),
         status: 'idle',
@@ -683,6 +741,7 @@ const toLlmConfig = async (user, index) => {
       name: systemLlmName(index),
       endpoint: data.endpoint ?? '',
       model: data.model ?? '',
+      modelAlias: data.modelAlias ?? liteLlmModelAlias(user, index),
       token: '',
       tier: defaultTier(index),
       status: 'idle',
@@ -701,6 +760,7 @@ const toLlmConfig = async (user, index) => {
       name: systemLlmName(index),
       endpoint: '',
       model: '',
+      modelAlias: liteLlmModelAlias(user, index),
       token: '',
       tier: defaultTier(index),
       status: 'idle',
@@ -722,6 +782,7 @@ app.get('/api/health/details', requireAuth, requireAdmin, (_request, response) =
     openBaoUrl,
     openBaoKvMount,
     openBaoPrefix,
+    liteLlmUrl,
     appDatabaseConfigured: Boolean(appDatabaseUrl),
   });
 });
@@ -938,22 +999,34 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
       configs.slice(0, llmEndpointCount).map(async (config, index) => {
         const existingSecret = await openBaoFetchOptional(dataApiPath(request.user, index));
         const existingData = existingSecret?.data?.data ?? {};
+        const endpoint = config.endpoint ?? existingData.endpoint ?? '';
+        const model = config.model ?? existingData.model ?? '';
         const nextToken = config.token || existingData.token || '';
+        const modelAlias = liteLlmModelAlias(request.user, index);
 
-        return openBaoFetch(dataApiPath(request.user, index), {
+        if (endpoint) {
+          await validateLlmEndpoint(endpoint);
+        }
+
+        await openBaoFetch(dataApiPath(request.user, index), {
           method: 'POST',
           body: JSON.stringify({
             data: {
               id: config.id ?? `openbao-llm-${index + 1}`,
               name: systemLlmName(index),
-              endpoint: config.endpoint ?? '',
-              model: config.model ?? '',
+              endpoint,
+              model,
+              modelAlias,
               tier: defaultTier(index),
               token: nextToken,
               updatedAt: now,
             },
           }),
         });
+
+        if (endpoint && model && nextToken) {
+          await configureLiteLlmModel(request.user, index, { endpoint, model });
+        }
       }),
     );
 
@@ -974,7 +1047,7 @@ app.post('/api/llm-config/test', requireAuth, async (request, response, next) =>
     log('POST /api/llm-config/test', {
       index: llmConfig.index + 1,
       name: llmConfig.name,
-      hasStoredToken: true,
+      modelAlias: llmConfig.modelAlias,
     });
     await callLlmChatEndpoint(llmConfig, 'Reply with only: ok');
     response.json({
@@ -999,6 +1072,7 @@ app.post('/api/llm-config/chat', requireAuth, async (request, response, next) =>
     log('POST /api/llm-config/chat', {
       index: llmConfig.index + 1,
       name: llmConfig.name,
+      modelAlias: llmConfig.modelAlias,
       questionLength: question.length,
     });
     const body = await callLlmChatEndpoint(llmConfig, question);
@@ -1045,4 +1119,5 @@ app.listen(apiPort, apiHost, () => {
   console.log(`AISSIStaint API proxy listening on http://${apiHost}:${apiPort}`);
   console.log(`Using Keycloak issuer ${issuer}`);
   console.log(`Using OpenBao ${openBaoUrl}/${openBaoKvMount}/${openBaoPrefix}`);
+  console.log(`Using LiteLLM proxy ${liteLlmUrl}`);
 });

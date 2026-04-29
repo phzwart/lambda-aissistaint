@@ -14,6 +14,7 @@ export interface LlmConfig {
   name: string;
   endpoint: string;
   model: string;
+  modelAlias?: string;
   token: string;
   tier: LlmTier;
   status: ConnectionStatus;

@@ -17,7 +17,7 @@ export const appConfig = {
   appSubtitle: import.meta.env.VITE_APP_SUBTITLE ?? 'Knowledge & Question Processor',
   preferencesSubtitle:
     import.meta.env.VITE_PREFERENCES_SUBTITLE ??
-    'Configure LLM endpoints and assign them to routing tiers. Backend/OpenBao integration can replace the mock service without changing this screen.',
+    'Configure LiteLLM provider models and assign them to routing tiers. Provider keys are write-only and stored through OpenBao.',
   keycloakUrl: import.meta.env.VITE_KEYCLOAK_URL ?? '',
   keycloakRealm: import.meta.env.VITE_KEYCLOAK_REALM ?? '',
   keycloakClientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID ?? '',

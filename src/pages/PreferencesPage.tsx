@@ -82,8 +82,8 @@ export function PreferencesPage() {
       id: crypto.randomUUID(),
       level: 'info',
       message: appConfig.useMockServices
-        ? 'Mock services are enabled. Backend/OpenBao calls are simulated in the browser.'
-        : 'Real services are enabled. OpenBao actions will go through the backend proxy.',
+        ? 'Mock services are enabled. Backend/LiteLLM calls are simulated in the browser.'
+        : 'Real services are enabled. Provider keys are stored in OpenBao and inference goes through LiteLLM.',
       timestamp: new Date().toISOString(),
     },
   ]);
@@ -143,7 +143,7 @@ export function PreferencesPage() {
 
   const testConnection = async (config: LlmConfig) => {
     addActivity(`Testing connection for ${config.name || config.id}.`);
-    updateConfig(config.id, { status: 'testing', message: 'Testing endpoint...' });
+    updateConfig(config.id, { status: 'testing', message: 'Testing LiteLLM model...' });
     const result = await llmConfigService.testConnection(config);
     updateConfig(config.id, result);
     addActivity(result.message ?? 'Connection test completed.', result.status === 'success' ? 'success' : 'error');
@@ -151,16 +151,16 @@ export function PreferencesPage() {
 
   const saveConfiguration = async () => {
     setIsSaving(true);
-    addActivity('Saving LLM configuration through backend/OpenBao proxy.');
+    addActivity('Saving LiteLLM provider configuration through the backend/OpenBao proxy.');
 
     try {
       const saved = await llmConfigService.save(normalizeConfigs(configs));
       setConfigs(saved);
       setBanner({
         severity: 'success',
-        message: appConfig.useMockServices ? 'Configuration saved in mock storage.' : 'Configuration saved to OpenBao.',
+        message: appConfig.useMockServices ? 'Configuration saved in mock storage.' : 'Configuration saved to OpenBao and LiteLLM.',
       });
-      addActivity(`Saved ${saved.length} endpoint configuration(s).`, 'success');
+      addActivity(`Saved ${saved.length} LiteLLM model configuration(s).`, 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to save configuration.';
       setBanner({ severity: 'error', message });
@@ -172,7 +172,7 @@ export function PreferencesPage() {
 
   const clearSecrets = async () => {
     setIsSaving(true);
-    addActivity('Clearing stored LLM secrets through backend/OpenBao proxy.');
+    addActivity('Clearing stored provider keys through backend/OpenBao proxy.');
 
     try {
       await llmConfigService.clearSecrets();
@@ -180,9 +180,9 @@ export function PreferencesPage() {
       setConfigs(sanitized);
       setBanner({
         severity: 'info',
-        message: appConfig.useMockServices ? 'Stored mock secrets were cleared.' : 'OpenBao LLM secrets were cleared.',
+        message: appConfig.useMockServices ? 'Stored mock secrets were cleared.' : 'OpenBao provider keys were cleared.',
       });
-      addActivity('Stored LLM secrets were cleared.', 'success');
+      addActivity('Stored provider keys were cleared.', 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to clear stored secrets.';
       setBanner({ severity: 'error', message });
@@ -194,7 +194,7 @@ export function PreferencesPage() {
 
   const retrieveConfiguration = async () => {
     setIsRetrieving(true);
-    addActivity(`Retrieving configuration metadata from ${appConfig.openBaoUrl || 'backend OpenBao proxy'}.`);
+    addActivity(`Retrieving LiteLLM configuration metadata from ${appConfig.openBaoUrl || 'backend OpenBao proxy'}.`);
 
     try {
       const retrievedConfigs = normalizeConfigs(await llmConfigService.retrieveConfiguration());
@@ -207,7 +207,7 @@ export function PreferencesPage() {
         severity: 'success',
         message: `Retrieved configuration metadata from ${appConfig.openBaoUrl || 'mock OpenBao'}.`,
       });
-      addActivity(`Retrieved ${retrievedConfigs.length} endpoint metadata record(s).`, 'success');
+      addActivity(`Retrieved ${retrievedConfigs.length} LiteLLM metadata record(s).`, 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to retrieve configuration metadata.';
       setBanner({ severity: 'error', message });
@@ -471,7 +471,7 @@ export function PreferencesPage() {
       </div>
 
       <div style={{ display: 'grid', gap: 16 }}>
-        <section style={summaryGridStyle} aria-label="Retrieved OpenBao token summary">
+        <section style={summaryGridStyle} aria-label="Retrieved LiteLLM provider key summary">
           {configs.map((config, index) => (
             <button
               key={config.id}
@@ -482,12 +482,11 @@ export function PreferencesPage() {
                 ...(config.id === activeConfig?.id ? activeSummaryCardStyle : undefined),
               }}
             >
-              <strong>{config.name.trim() || `Endpoint ${index + 1}`}</strong>
+              <strong>{config.name.trim() || `LiteLLM Model ${index + 1}`}</strong>
               <span>{config.secretName ?? 'No OpenBao path yet'}</span>
-              <span>
-                Token: {config.tokenStored ? config.tokenPreview ?? 'stored' : 'not stored'}
-              </span>
+              <span>Provider key: {config.tokenStored ? config.tokenPreview ?? 'stored' : 'not stored'}</span>
               <span>Model: {config.model || 'not set'}</span>
+              <span>LiteLLM alias: {config.modelAlias || config.name}</span>
               <span>Version: {config.secretVersion ? `v${config.secretVersion}` : 'none'}</span>
             </button>
           ))}
@@ -497,7 +496,7 @@ export function PreferencesPage() {
           <section key={activeConfig.id} style={cardStyle}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
               <div>
-                <h2 style={{ margin: 0 }}>LLM Endpoint {activeConfigIndex + 1}</h2>
+                <h2 style={{ margin: 0 }}>LiteLLM Model {activeConfigIndex + 1}</h2>
                 <p style={{ margin: '6px 0 0', color: '#667085' }}>Tier: {tierLabels[activeConfig.tier]}</p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -515,9 +514,10 @@ export function PreferencesPage() {
               <MetadataItem label="Last retrieved" value={formatDate(activeConfig.secretLastRetrievedAt)} />
               <MetadataItem label="Lease status" value={activeConfig.secretLeaseStatus ?? 'none'} />
               <MetadataItem
-                label="Token"
+                label="Provider key"
                 value={activeConfig.tokenStored ? activeConfig.tokenPreview ?? 'Stored in OpenBao' : 'Not stored'}
               />
+              <MetadataItem label="LiteLLM alias" value={activeConfig.modelAlias ?? activeConfig.name} />
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
@@ -530,7 +530,7 @@ export function PreferencesPage() {
                 <strong>{tierLabels[activeConfig.tier]}</strong>
               </div>
               <label style={{ ...fieldStyle, gridColumn: 'span 12' }}>
-                Base URL
+                Provider Base URL
                 <input
                   value={activeConfig.endpoint}
                   onChange={(event) => updateConfig(activeConfig.id, { endpoint: event.target.value })}
@@ -538,11 +538,11 @@ export function PreferencesPage() {
                   style={inputStyle}
                 />
                 <span style={{ color: '#667085', fontSize: 12, fontWeight: 400 }}>
-                  Enter the OpenAI-compatible base URL. The backend will call /chat/completions.
+                  Enter the provider's OpenAI-compatible base URL. LiteLLM will call this provider.
                 </span>
               </label>
               <label style={{ ...fieldStyle, gridColumn: 'span 12' }}>
-                Model
+                Provider Model
                 <input
                   value={activeConfig.model}
                   onChange={(event) => updateConfig(activeConfig.id, { model: event.target.value })}
@@ -551,7 +551,7 @@ export function PreferencesPage() {
                 />
               </label>
               <label style={{ ...fieldStyle, gridColumn: 'span 12' }}>
-                API token
+                Provider API key
                 <input
                   type="password"
                   value={activeConfig.token}
@@ -559,7 +559,7 @@ export function PreferencesPage() {
                   style={inputStyle}
                 />
                 <span style={{ color: '#667085', fontSize: 12, fontWeight: 400 }}>
-                  Leave blank to keep the existing OpenBao token. Enter a new value only when rotating or setting it.
+                  Write-only rotation field. Leave blank to keep the existing OpenBao key; it is never returned to the app.
                 </span>
               </label>
               <div style={{ gridColumn: 'span 3', alignSelf: 'center' }}>
@@ -599,11 +599,11 @@ export function PreferencesPage() {
           <div>
             <h2 style={{ margin: 0 }}>LLM Test Chat</h2>
             <p style={{ margin: '6px 0 0', color: '#667085' }}>
-              Ask a quick question against one configured endpoint before using it in the workflow.
+              Ask a quick question through LiteLLM before using this model in the workflow.
             </p>
           </div>
           <label style={{ ...fieldStyle, minWidth: 280 }}>
-            Test endpoint
+            Test model
             <select
               value={selectedChatConfigId}
               onChange={(event) => setSelectedChatConfigId(event.target.value)}
@@ -611,7 +611,7 @@ export function PreferencesPage() {
             >
               {configs.map((config, index) => (
                 <option key={config.id} value={config.id}>
-                  {config.name.trim() || `LLM Endpoint ${index + 1}`} ({tierLabels[config.tier]})
+                  {config.name.trim() || `LiteLLM Model ${index + 1}`} ({tierLabels[config.tier]})
                 </option>
               ))}
             </select>
@@ -688,7 +688,7 @@ export function PreferencesPage() {
         <section style={cardStyle}>
           <p style={{ margin: '0 0 20px', color: '#667085' }}>
             Configure agent behavior for the workflow. This tab is ready for agent-specific settings that should
-            remain separate from LLM endpoint credentials.
+            remain separate from LiteLLM provider credentials.
           </p>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>

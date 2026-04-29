@@ -149,8 +149,8 @@ export const llmConfigService = {
     return {
       status: config.token.trim() ? 'success' : 'error',
       message: config.token.trim()
-        ? 'Mock connection succeeded. Ready to route through backend/OpenBao.'
-        : 'Token is required before testing this endpoint.',
+        ? 'Mock connection succeeded. Ready to route through backend/LiteLLM.'
+        : 'Provider API key is required before testing this LiteLLM model.',
       lastTestedAt: new Date().toISOString(),
     };
   },
@@ -175,11 +175,11 @@ export const llmConfigService = {
     }
 
     if (!config.token.trim()) {
-      throw new Error('Add an API token before sending a test question.');
+      throw new Error('Add a provider API key before sending a test question.');
     }
 
     const modelName = config.name.trim() || `${config.tier.toUpperCase()} tier LLM`;
 
-    return `Mock ${modelName} response: I received "${question}". When the backend is connected, this test chat will call the selected endpoint through the secure API/OpenBao flow.`;
+    return `Mock ${modelName} response: I received "${question}". When the backend is connected, this test chat will call LiteLLM through the secure API flow.`;
   },
 };
