@@ -10,13 +10,13 @@ import express from 'express';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import pg from 'pg';
 
-const loadEnvFile = (path) => {
+const loadEnvFile = (path, { allowEmpty = true } = {}) => {
   if (!path || !existsSync(path)) {
     return;
   }
@@ -28,14 +28,23 @@ const loadEnvFile = (path) => {
     }
 
     const [key, ...valueParts] = line.split('=');
-    if (!process.env[key]) {
-      process.env[key] = valueParts.join('=');
+    const value = valueParts.join('=');
+    if (!(key in process.env)) {
+      if (value || allowEmpty) {
+        process.env[key] = value;
+      }
     }
   }
 };
 
-loadEnvFile(resolve('.env.local'));
-loadEnvFile(process.env.PLATFORM_ENV_FILE || `${homedir()}/platform-demo/platform-demo-runtime.env`);
+const defaultPlatformDir = `${homedir()}/platform-demo`;
+loadEnvFile(resolve('.env.local'), { allowEmpty: false });
+loadEnvFile(process.env.PLATFORM_ENV_FILE || `${defaultPlatformDir}/platform-demo-runtime.env`);
+loadEnvFile(process.env.API_SECRET_ENV_FILE || `${defaultPlatformDir}/secrets/api-runtime.env`);
+loadEnvFile(process.env.LITELLM_SECRET_BROKER_ENV_FILE || `${defaultPlatformDir}/secrets/litellm-secret-broker.env`);
+if (process.env.API_LOAD_REMOVAL_SECRETS === 'true') {
+  loadEnvFile(process.env.API_REMOVAL_ENV_FILE || `${defaultPlatformDir}/secrets/api-removal.env`);
+}
 
 const apiPort = Number.parseInt(process.env.API_PORT ?? '8787', 10);
 const apiHost = process.env.API_HOST ?? '127.0.0.1';
@@ -78,12 +87,16 @@ const allowedLlmHosts = new Set(
 );
 const allowPrivateLlmEndpoints = process.env.LLM_ALLOW_PRIVATE_ENDPOINTS === 'true';
 const allowHttpLlmEndpoints = process.env.LLM_ALLOW_HTTP_ENDPOINTS === 'true';
+const allowAnyLlmHosts = process.env.LLM_ALLOW_ANY_HOSTS === 'true';
+const explicitLlmDevMode = process.env.LLM_DEV_MODE === 'true';
 const llmRequestTimeoutMs = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?? '30000', 10);
 const liteLlmUrl = (process.env.INTERNAL_LITELLM_URL ?? 'http://127.0.0.1:4000').replace(/\/+$/g, '');
 const liteLlmApiKey = process.env.LITELLM_API_KEY ?? '';
-const liteLlmAdminKey = process.env.LITELLM_ADMIN_KEY ?? process.env.LITELLM_MASTER_KEY ?? '';
+const liteLlmAdminBrokerUrl = (process.env.LITELLM_ADMIN_BROKER_URL ?? 'http://127.0.0.1:8788').replace(/\/+$/g, '');
+const liteLlmAdminBrokerToken = process.env.LITELLM_ADMIN_BROKER_TOKEN ?? '';
 const liteLlmSecretBrokerToken = process.env.LITELLM_SECRET_BROKER_TOKEN ?? '';
 const secretEncryptionKeyVersion = process.env.SECRET_ENCRYPTION_KEY_VERSION ?? 'v1';
+const allowedLiteLlmAliasPattern = /^aissistaint-[a-z0-9_-]{1,48}-(high|medium|low)$/;
 const llmTiers = (process.env.VITE_LLM_TIERS ?? 'high,medium,low')
   .split(',')
   .map((tier) => tier.trim().toLowerCase())
@@ -103,8 +116,8 @@ if (!liteLlmApiKey) {
   console.warn('LITELLM_API_KEY is not set. LLM test/chat calls will fail until LiteLLM proxy credentials are configured.');
 }
 
-if (!liteLlmAdminKey) {
-  console.warn('LITELLM_ADMIN_KEY is not set. Saving LLM provider configuration will not be able to update LiteLLM model aliases.');
+if (!liteLlmAdminBrokerToken) {
+  console.warn('LITELLM_ADMIN_BROKER_TOKEN is not set. Saving LLM provider configuration will not be able to update LiteLLM model aliases.');
 }
 
 if (!liteLlmSecretBrokerToken) {
@@ -115,8 +128,8 @@ if (process.env.NODE_ENV === 'production' && allowPrivateLlmEndpoints) {
   throw new Error('LLM_ALLOW_PRIVATE_ENDPOINTS cannot be enabled when NODE_ENV=production.');
 }
 
-if (process.env.NODE_ENV === 'production' && allowedLlmHosts.size === 0) {
-  throw new Error('LLM_ALLOWED_HOSTS must be configured when NODE_ENV=production.');
+if (allowedLlmHosts.size === 0 && !(allowAnyLlmHosts && explicitLlmDevMode && process.env.NODE_ENV !== 'production')) {
+  throw new Error('LLM_ALLOWED_HOSTS must be configured unless LLM_ALLOW_ANY_HOSTS=true and LLM_DEV_MODE=true outside production.');
 }
 
 const projectDb = appDatabaseUrl ? new pg.Pool({ connectionString: appDatabaseUrl }) : null;
@@ -167,7 +180,17 @@ const log = (message, details = {}) => {
 
 const loadSecretEncryptionKey = () => {
   const keyFile = process.env.SECRET_ENCRYPTION_KEY_FILE ?? '';
-  const raw = process.env.SECRET_ENCRYPTION_KEY || (keyFile && existsSync(keyFile) ? readFileSync(keyFile, 'utf8').trim() : '');
+  let raw = '';
+  if (keyFile && existsSync(keyFile)) {
+    const mode = statSync(keyFile).mode & 0o777;
+    if ((mode & 0o077) !== 0) {
+      throw new Error('SECRET_ENCRYPTION_KEY_FILE must not be readable by group or others.');
+    }
+    raw = readFileSync(keyFile, 'utf8').trim();
+  } else if (process.env.SECRET_ENCRYPTION_KEY_ALLOW_ENV === 'true') {
+    raw = process.env.SECRET_ENCRYPTION_KEY ?? '';
+  }
+
   if (!raw) {
     return null;
   }
@@ -177,7 +200,7 @@ const loadSecretEncryptionKey = () => {
     ? Buffer.from(normalized, 'hex')
     : Buffer.from(normalized, 'base64');
   if (key.length !== 32) {
-    throw new Error('SECRET_ENCRYPTION_KEY must decode to 32 bytes.');
+    throw new Error('Secret encryption key must decode to 32 bytes.');
   }
   return key;
 };
@@ -710,34 +733,32 @@ const loadRunnableLlmConfig = async (user, config) => {
 };
 
 const configureLiteLlmModel = async (user, index, { endpoint, model }) => {
-  if (!liteLlmAdminKey) {
-    throw new Error('LiteLLM admin key is not configured on the backend.');
+  if (!liteLlmAdminBrokerToken) {
+    throw new Error('LiteLLM admin broker token is not configured on the backend.');
   }
 
   const modelAlias = liteLlmModelAlias(user, index);
-  const response = await fetch(`${liteLlmUrl}/model/new`, {
+  const response = await fetch(`${liteLlmAdminBrokerUrl}/internal/litellm/models`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${liteLlmAdminKey}`,
+      Authorization: `Bearer ${liteLlmAdminBrokerToken}`,
     },
     body: JSON.stringify({
-      model_name: modelAlias,
-      litellm_params: {
-        model,
-        api_base: endpoint,
-        api_key: liteLlmSecretReference(user, index),
-      },
+      modelAlias,
+      model,
+      endpoint,
+      secretReference: liteLlmSecretReference(user, index),
     }),
   });
   const body = await jsonResponse(response);
-  log('LiteLLM model configuration request', {
+  log('LiteLLM model configuration broker request', {
     modelAlias,
     status: response.status,
   });
 
   if (!response.ok) {
-    throw new Error(body.error?.message ?? body.error ?? body.raw ?? `LiteLLM model configuration failed with ${response.status}`);
+    throw new Error(body.error ?? body.raw ?? `LiteLLM model configuration failed with ${response.status}`);
   }
 
   return modelAlias;
@@ -883,6 +904,11 @@ app.get('/internal/litellm/secrets/:modelAlias', async (request, response, next)
     }
 
     const modelAlias = request.params.modelAlias;
+    if (!allowedLiteLlmAliasPattern.test(modelAlias)) {
+      response.status(400).json({ error: 'Model alias is outside the allowed AIssistAInt namespace.' });
+      return;
+    }
+
     const aliasRecord = await secretStoreRead(aliasPath(modelAlias));
     const secretPathForAlias = aliasRecord?.data?.data?.secretPath;
     if (!secretPathForAlias) {

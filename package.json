@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm:dev:api\" \"npm:dev:ui\"",
+    "dev": "concurrently \"npm:dev:api\" \"npm:dev:litellm-admin\" \"npm:dev:ui\"",
     "dev:ui": "vite --host 0.0.0.0",
     "dev:api": "node server/index.mjs",
+    "dev:litellm-admin": "node server/litellm-admin-broker.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },
