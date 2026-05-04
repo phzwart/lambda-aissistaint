@@ -107,6 +107,25 @@ const resolveProviderApiKey = async (modelAlias) => {
   return body.value;
 };
 
+const deleteExistingLiteLlmModel = async (modelAlias) => {
+  const response = await fetch(`${liteLlmUrl}/model/delete`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${liteLlmAdminKey}`,
+    },
+    body: JSON.stringify({ id: modelAlias }),
+  });
+
+  if ([200, 400, 404].includes(response.status)) {
+    return;
+  }
+
+  const body = await jsonResponse(response);
+  throw new Error(body.error?.message ?? body.error ?? body.raw ?? `LiteLLM model delete returned ${response.status}`);
+};
+
 const requireBrokerAuth = (request, response, next) => {
   const header = request.get('authorization') ?? '';
   const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
@@ -174,6 +193,7 @@ app.post('/internal/litellm/models', requireBrokerAuth, async (request, response
 
     await validateLlmEndpoint(endpoint);
     const providerApiKey = await resolveProviderApiKey(modelAlias);
+    await deleteExistingLiteLlmModel(modelAlias);
 
     const litellmResponse = await fetch(`${liteLlmUrl}/model/new`, {
       method: 'POST',
@@ -188,6 +208,9 @@ app.post('/internal/litellm/models', requireBrokerAuth, async (request, response
           model: toLiteLlmProviderModel(model),
           api_base: endpoint,
           api_key: providerApiKey,
+        },
+        model_info: {
+          id: modelAlias,
         },
       }),
     });

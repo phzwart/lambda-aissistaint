@@ -756,21 +756,31 @@ const callLlmChatEndpoint = async (
   const url = `${liteLlmUrl}/chat/completions`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
-  const response = await fetch(url, {
-    method: 'POST',
-    signal: controller.signal,
-    redirect: 'manual',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${liteLlmApiKey}`,
-    },
-    body: JSON.stringify({
-      model: modelAlias,
-      messages: chatMessages,
-      max_tokens: maxTokens,
-      temperature,
-    }),
-  }).finally(() => clearTimeout(timeout));
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      signal: controller.signal,
+      redirect: 'manual',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${liteLlmApiKey}`,
+      },
+      body: JSON.stringify({
+        model: modelAlias,
+        messages: chatMessages,
+        max_tokens: maxTokens,
+        temperature,
+      }),
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`LiteLLM chat request timed out after ${llmRequestTimeoutMs}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   const body = await jsonResponse(response);
   log('LiteLLM chat request', {
     endpoint: liteLlmUrl,
