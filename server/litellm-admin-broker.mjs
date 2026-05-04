@@ -87,7 +87,7 @@ const jsonResponse = async (response) => {
 
 const toLiteLlmProviderModel = (model) => {
   const trimmed = String(model ?? '').trim();
-  return trimmed.includes('/') ? trimmed : `openai/${trimmed}`;
+  return trimmed.startsWith('openai/') ? trimmed : `openai/${trimmed}`;
 };
 
 const resolveProviderApiKey = async (modelAlias) => {
