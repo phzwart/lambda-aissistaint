@@ -69,6 +69,73 @@ export interface GooseChatResponse {
   gooseSessionId?: string;
 }
 
+export type AgentSkillStatus = 'draft' | 'enabled';
+
+export type AgentSkillExecutorMode = 'none' | 'catalog' | 'custom';
+
+export type AgentSkillNetworkPolicy = 'none' | 'egress';
+
+export interface AgentSkillExecutable {
+  mode: AgentSkillExecutorMode;
+  catalogId?: string;
+  image?: string;
+  command?: string;
+  args: string[];
+  workingDir?: string;
+  timeoutSeconds: number;
+  network: AgentSkillNetworkPolicy;
+  envAllowlist: string[];
+}
+
+export interface AgentSkillPackageFile {
+  path: string;
+  content: string;
+}
+
+export interface AgentSkillPackage {
+  directoryName: string;
+  skillMd: string;
+  files: AgentSkillPackageFile[];
+}
+
+export interface AgentSkill {
+  id: string;
+  name: string;
+  category: string;
+  status: AgentSkillStatus;
+  purpose: string;
+  whenToUse: string;
+  inputs: string[];
+  procedure: string;
+  expectedOutput: string;
+  safetyConstraints: string;
+  requiredTools: string[];
+  executable: AgentSkillExecutable;
+  skillPackage: AgentSkillPackage;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectAgentSkillBinding {
+  skillId: string;
+  enabled: boolean;
+  priority: number;
+  notes?: string;
+}
+
+export interface AgentExecutorCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  image: string;
+  command: string;
+  args: string[];
+  workingDir: string;
+  timeoutSeconds: number;
+  network: AgentSkillNetworkPolicy;
+  envAllowlist: string[];
+}
+
 export interface Project {
   id: string;
   name: string;

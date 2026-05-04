@@ -119,6 +119,14 @@ Runtime controls:
 
 The route audits `goose_chatbot.message` with endpoint and message counts only. Prompt bodies, responses, bearer tokens, and provider keys must stay out of logs.
 
+## Agent Skill Setup
+
+The Preferences / Setup page includes an Agent Setup tab for building a reusable, per-user skill library and enabling skills per project. Skills are authored with structured headings such as purpose, when to use, inputs, procedure, expected output, safety constraints, and required tools. Those fields automatically render into a portable skill directory with a Cursor/Anthropic-style `SKILL.md` file containing YAML frontmatter (`name`, `description`, and `disable-model-invocation`) plus the skill instructions.
+
+Executable support is declarative in this first pass. A skill can have no executor, use an approved container from the backend catalog, or define a validated custom container with image, command, args, working directory, timeout, network policy, and environment allowlist. The browser never runs executables directly, and skill definitions must not contain raw secrets.
+
+Agent skill records and project enablement are stored through the backend/OpenBao flow under the user's `app-tokens` namespace. Relevant actions emit non-secret audit events (`agent_skill.save`, `agent_skill.delete`, `agent_skill.enable`, and `agent_executor.catalog_read`).
+
 ## User Flow
 
 Users should:

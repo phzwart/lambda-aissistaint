@@ -41,6 +41,10 @@ AIssistAInt audit events are structured, non-secret operational records. They ar
 | `litellm_model.configure` | API/admin broker configures a LiteLLM alias | Provider key, admin key |
 | `litellm_secret.read` | LiteLLM resolves a provider key alias | Decrypted provider key |
 | `project.delete` | Project metadata is deleted and bucket is restricted | Object contents |
+| `agent_skill.save` | User creates or updates an agent skill | Full procedure text if it contains sensitive data, executor secrets |
+| `agent_skill.delete` | User deletes an agent skill | Skill body, executor secrets |
+| `agent_skill.enable` | User saves project-level skill enablement | Skill body, project-sensitive notes |
+| `agent_executor.catalog_read` | User loads approved executor options | Internal registry credentials |
 | `broker.auth_denied` | Broker rejects a bearer token | Presented token |
 
 ## Retention And Review

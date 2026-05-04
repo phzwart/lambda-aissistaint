@@ -1,10 +1,20 @@
 import { FormEvent, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { appConfig } from '../config/env';
+import { agentSkillService, createEmptyAgentSkill, defaultAgentSkillExecutable } from '../services/agentSkillService';
 import { llmConfigService } from '../services/llmConfigService';
 import { projectService } from '../services/projectService';
 import { useWorkflowStore } from '../state/workflowStore';
-import type { ConnectionStatus, LlmConfig, LlmTier, Project } from '../types/domain';
+import type {
+  AgentExecutorCatalogItem,
+  AgentSkill,
+  AgentSkillExecutable,
+  ConnectionStatus,
+  LlmConfig,
+  LlmTier,
+  Project,
+  ProjectAgentSkillBinding,
+} from '../types/domain';
 
 const tierLabels: Record<LlmTier, string> = {
   a: 'A',
@@ -38,6 +48,81 @@ const normalizeConfigs = (configs: LlmConfig[]) =>
     model: configs[index]?.model ?? '',
   }));
 
+const linesToList = (value: string) =>
+  value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const listToLines = (values: string[]) => values.join('\n');
+
+const createBinding = (skill: AgentSkill, index: number): ProjectAgentSkillBinding => ({
+  skillId: skill.id,
+  enabled: false,
+  priority: index + 1,
+  notes: '',
+});
+
+const slugifySkillName = (value: string, fallback = 'agent-skill') => {
+  const slug = (value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return slug || fallback;
+};
+
+const buildSkillMarkdownPreview = (skill: AgentSkill) => {
+  const directoryName = slugifySkillName(skill.name, skill.id);
+  const description = `${skill.purpose || `${skill.name || directoryName} agent skill.`}${
+    skill.whenToUse ? ` Use when ${skill.whenToUse.replace(/\.$/, '')}.` : ''
+  }`
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 1024);
+  const listSection = (title: string, values: string[]) => (values.length ? `\n## ${title}\n\n${values.map((value) => `- ${value}`).join('\n')}\n` : '');
+  const executableSection =
+    skill.executable.mode === 'none'
+      ? ''
+      : `\n## Executable\n\nMode: ${skill.executable.mode}\n${
+          skill.executable.catalogId ? `Catalog id: ${skill.executable.catalogId}\n` : ''
+        }${skill.executable.image ? `Container image: ${skill.executable.image}\n` : ''}${
+          skill.executable.command ? `Command: \`${[skill.executable.command, ...skill.executable.args].join(' ')}\`\n` : ''
+        }Timeout: ${skill.executable.timeoutSeconds} seconds\nNetwork: ${skill.executable.network}\n`;
+
+  return {
+    directoryName,
+    skillMd: `---
+name: ${directoryName}
+description: ${JSON.stringify(description)}
+disable-model-invocation: true
+---
+
+# ${skill.name || directoryName}
+
+## Purpose
+
+${skill.purpose || 'Describe what this skill does.'}
+
+## When To Use
+
+${skill.whenToUse || 'Describe when the agent should use this skill.'}
+${listSection('Inputs', skill.inputs)}
+## Procedure
+
+${skill.procedure || 'Describe the steps the agent should follow.'}
+
+## Expected Output
+
+${skill.expectedOutput || 'Describe the expected output.'}
+
+## Safety Constraints
+
+${skill.safetyConstraints || 'Follow project safety and data handling requirements.'}
+${listSection('Required Tools', skill.requiredTools)}${executableSection}`,
+  };
+};
+
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -70,6 +155,14 @@ export function PreferencesPage() {
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const [agentSkills, setAgentSkills] = useState<AgentSkill[]>([]);
+  const [activeSkillId, setActiveSkillId] = useState('');
+  const [skillDraft, setSkillDraft] = useState<AgentSkill>(createEmptyAgentSkill);
+  const [executorCatalog, setExecutorCatalog] = useState<AgentExecutorCatalogItem[]>([]);
+  const [projectSkillBindings, setProjectSkillBindings] = useState<ProjectAgentSkillBinding[]>([]);
+  const [isLoadingAgentSkills, setIsLoadingAgentSkills] = useState(false);
+  const [isSavingAgentSkill, setIsSavingAgentSkill] = useState(false);
+  const [isSavingSkillBindings, setIsSavingSkillBindings] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: crypto.randomUUID(),
@@ -122,6 +215,26 @@ export function PreferencesPage() {
       })
       .finally(() => setIsLoadingProjects(false));
   }, []);
+
+  useEffect(() => {
+    setIsLoadingAgentSkills(true);
+    void Promise.all([agentSkillService.list(activeProject?.id), agentSkillService.listExecutors()])
+      .then(([loaded, executors]) => {
+        setExecutorCatalog(executors);
+        setAgentSkills(loaded.skills);
+        setProjectSkillBindings(
+          loaded.skills.map((skill, index) => loaded.bindings.find((binding) => binding.skillId === skill.id) ?? createBinding(skill, index)),
+        );
+        const selectedSkill = loaded.skills.find((skill) => skill.id === activeSkillId) ?? loaded.skills[0] ?? createEmptyAgentSkill();
+        setActiveSkillId(selectedSkill.id);
+        setSkillDraft(selectedSkill);
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : 'Failed to load agent skills.';
+        setBanner({ severity: 'error', message });
+      })
+      .finally(() => setIsLoadingAgentSkills(false));
+  }, [activeProject?.id]);
 
   const activeConfig = configs.find((config) => config.id === activeConfigId) ?? configs[0];
   const activeConfigIndex = activeConfig ? configs.findIndex((config) => config.id === activeConfig.id) : -1;
@@ -357,6 +470,129 @@ export function PreferencesPage() {
           : project,
       ),
     );
+  };
+
+  const selectSkill = (skill: AgentSkill) => {
+    setActiveSkillId(skill.id);
+    setSkillDraft(skill);
+  };
+
+  const createSkill = () => {
+    const skill = createEmptyAgentSkill();
+    setAgentSkills((current) => [skill, ...current]);
+    setProjectSkillBindings((current) => [createBinding(skill, 0), ...current.map((binding) => ({ ...binding, priority: binding.priority + 1 }))]);
+    selectSkill(skill);
+  };
+
+  const updateSkillDraft = (patch: Partial<AgentSkill>) => {
+    setSkillDraft((current) => ({
+      ...current,
+      ...patch,
+    }));
+  };
+
+  const updateSkillExecutable = (patch: Partial<AgentSkillExecutable>) => {
+    setSkillDraft((current) => ({
+      ...current,
+      executable: {
+        ...current.executable,
+        ...patch,
+      },
+    }));
+  };
+
+  const saveSkill = async () => {
+    setIsSavingAgentSkill(true);
+    try {
+      const saved = await agentSkillService.save(skillDraft);
+      setAgentSkills((current) =>
+        current.some((skill) => skill.id === saved.id)
+          ? current.map((skill) => (skill.id === saved.id ? saved : skill))
+          : [saved, ...current],
+      );
+      setSkillDraft(saved);
+      setActiveSkillId(saved.id);
+      setProjectSkillBindings((current) =>
+        current.some((binding) => binding.skillId === saved.id) ? current : [createBinding(saved, current.length), ...current],
+      );
+      setBanner({ severity: 'success', message: `Skill "${saved.name || 'Untitled skill'}" saved.` });
+      addActivity(`Saved agent skill "${saved.name || saved.id}".`, 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save agent skill.';
+      setBanner({ severity: 'error', message });
+      addActivity(message, 'error');
+    } finally {
+      setIsSavingAgentSkill(false);
+    }
+  };
+
+  const deleteSkill = async () => {
+    if (!skillDraft.id) {
+      return;
+    }
+    const confirmed = window.confirm(`Delete skill "${skillDraft.name || skillDraft.id}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setIsSavingAgentSkill(true);
+    try {
+      await agentSkillService.delete(skillDraft.id);
+      const remaining = agentSkills.filter((skill) => skill.id !== skillDraft.id);
+      setAgentSkills(remaining);
+      setProjectSkillBindings((current) => current.filter((binding) => binding.skillId !== skillDraft.id));
+      const nextSkill = remaining[0] ?? createEmptyAgentSkill();
+      selectSkill(nextSkill);
+      setBanner({ severity: 'info', message: 'Agent skill deleted.' });
+      addActivity('Deleted agent skill.', 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete agent skill.';
+      setBanner({ severity: 'error', message });
+      addActivity(message, 'error');
+    } finally {
+      setIsSavingAgentSkill(false);
+    }
+  };
+
+  const updateProjectSkillBinding = (skillId: string, patch: Partial<ProjectAgentSkillBinding>) => {
+    setProjectSkillBindings((current) =>
+      current.map((binding) =>
+        binding.skillId === skillId
+          ? {
+              ...binding,
+              ...patch,
+            }
+          : binding,
+      ),
+    );
+  };
+
+  const skillPackagePreview = skillDraft.skillPackage?.skillMd
+    ? skillDraft.skillPackage
+    : {
+        ...buildSkillMarkdownPreview(skillDraft),
+        files: [],
+      };
+
+  const saveProjectSkillBindings = async () => {
+    if (!activeProject) {
+      setBanner({ severity: 'error', message: 'Choose an active project before enabling skills.' });
+      return;
+    }
+
+    setIsSavingSkillBindings(true);
+    try {
+      const saved = await agentSkillService.saveProjectBindings(activeProject.id, projectSkillBindings);
+      setProjectSkillBindings(saved);
+      setBanner({ severity: 'success', message: `Saved skill enablement for "${activeProject.name}".` });
+      addActivity(`Saved ${saved.filter((binding) => binding.enabled).length} enabled project skill(s).`, 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save project skill bindings.';
+      setBanner({ severity: 'error', message });
+      addActivity(message, 'error');
+    } finally {
+      setIsSavingSkillBindings(false);
+    }
   };
 
   return (
@@ -685,23 +921,348 @@ export function PreferencesPage() {
       )}
 
       {activeSetupTab === 'agent' && (
-        <section style={cardStyle}>
-          <p style={{ margin: '0 0 20px', color: '#667085' }}>
-            Configure agent behavior for the workflow. This tab is ready for agent-specific settings that should
-            remain separate from LiteLLM provider credentials.
-          </p>
+        <div style={{ display: 'grid', gap: 16 }}>
+          <section style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Agent Skill Library</h2>
+                <p style={{ margin: '6px 0 0', color: '#667085' }}>
+                  Create reusable skills with standard headings, then enable the right set for each active project.
+                </p>
+              </div>
+              <button type="button" onClick={createSkill} style={primaryButtonStyle}>
+                Add Skill
+              </button>
+            </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
-            <div style={{ ...readOnlyFieldStyle, gridColumn: 'span 6' }}>
-              <span style={readOnlyLabelStyle}>Configuration scope</span>
-              <strong>Workflow agents</strong>
+            <section style={summaryGridStyle} aria-label="Agent skill library">
+              {agentSkills.length === 0 && !isLoadingAgentSkills ? (
+                <div style={{ ...readOnlyFieldStyle, gridColumn: '1 / -1' }}>
+                  <span style={readOnlyLabelStyle}>No skills yet</span>
+                  <strong>Add a skill to start building the agent library.</strong>
+                </div>
+              ) : (
+                agentSkills.map((skill) => (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    onClick={() => selectSkill(skill)}
+                    style={{
+                      ...summaryCardStyle,
+                      ...(skill.id === activeSkillId ? activeSummaryCardStyle : undefined),
+                    }}
+                  >
+                    <strong>{skill.name || 'Untitled skill'}</strong>
+                    <span>Category: {skill.category || 'General'}</span>
+                    <span>Status: {skill.status}</span>
+                    <span>Executor: {skill.executable.mode}</span>
+                    <span>Updated: {formatDate(skill.updatedAt)}</span>
+                  </button>
+                ))
+              )}
+            </section>
+          </section>
+
+          <section style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Skill Editor</h2>
+                <p style={{ margin: '6px 0 0', color: '#667085' }}>
+                  Fill in the headings agents need for consistent prompt injection.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}>
+                <button type="button" onClick={saveSkill} disabled={isSavingAgentSkill} style={primaryButtonStyle}>
+                  {isSavingAgentSkill ? 'Saving...' : 'Save Skill'}
+                </button>
+                <button type="button" onClick={deleteSkill} disabled={isSavingAgentSkill || agentSkills.length === 0} style={dangerButtonStyle}>
+                  Delete
+                </button>
+              </div>
             </div>
-            <div style={{ ...readOnlyFieldStyle, gridColumn: 'span 6' }}>
-              <span style={readOnlyLabelStyle}>Status</span>
-              <strong>Not configured yet</strong>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Name
+                <input value={skillDraft.name} onChange={(event) => updateSkillDraft({ name: event.target.value })} style={inputStyle} />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
+                Category
+                <input value={skillDraft.category} onChange={(event) => updateSkillDraft({ category: event.target.value })} style={inputStyle} />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
+                Status
+                <select
+                  value={skillDraft.status}
+                  onChange={(event) => updateSkillDraft({ status: event.target.value === 'enabled' ? 'enabled' : 'draft' })}
+                  style={inputStyle}
+                >
+                  <option value="draft">Draft</option>
+                  <option value="enabled">Enabled</option>
+                </select>
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Purpose
+                <textarea
+                  value={skillDraft.purpose}
+                  onChange={(event) => updateSkillDraft({ purpose: event.target.value })}
+                  rows={4}
+                  style={textareaStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                When to use
+                <textarea
+                  value={skillDraft.whenToUse}
+                  onChange={(event) => updateSkillDraft({ whenToUse: event.target.value })}
+                  rows={4}
+                  style={textareaStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Inputs
+                <textarea
+                  value={listToLines(skillDraft.inputs)}
+                  onChange={(event) => updateSkillDraft({ inputs: linesToList(event.target.value) })}
+                  rows={4}
+                  placeholder="One input per line"
+                  style={textareaStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Required tools
+                <textarea
+                  value={listToLines(skillDraft.requiredTools)}
+                  onChange={(event) => updateSkillDraft({ requiredTools: linesToList(event.target.value) })}
+                  rows={4}
+                  placeholder="One tool per line"
+                  style={textareaStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 12' }}>
+                Procedure
+                <textarea
+                  value={skillDraft.procedure}
+                  onChange={(event) => updateSkillDraft({ procedure: event.target.value })}
+                  rows={6}
+                  style={textareaStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Expected output
+                <textarea
+                  value={skillDraft.expectedOutput}
+                  onChange={(event) => updateSkillDraft({ expectedOutput: event.target.value })}
+                  rows={4}
+                  style={textareaStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Safety constraints
+                <textarea
+                  value={skillDraft.safetyConstraints}
+                  onChange={(event) => updateSkillDraft({ safetyConstraints: event.target.value })}
+                  rows={4}
+                  style={textareaStyle}
+                />
+              </label>
             </div>
-          </div>
-        </section>
+          </section>
+
+          <section style={cardStyle}>
+            <h2 style={{ margin: '0 0 14px' }}>Executable</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
+              <label style={{ ...fieldStyle, gridColumn: 'span 4' }}>
+                Executor mode
+                <select
+                  value={skillDraft.executable.mode}
+                  onChange={(event) =>
+                    updateSkillExecutable({
+                      ...defaultAgentSkillExecutable(),
+                      mode: event.target.value === 'catalog' ? 'catalog' : event.target.value === 'custom' ? 'custom' : 'none',
+                    })
+                  }
+                  style={inputStyle}
+                >
+                  <option value="none">None</option>
+                  <option value="catalog">Approved container</option>
+                  <option value="custom">Custom container</option>
+                </select>
+              </label>
+
+              {skillDraft.executable.mode === 'catalog' && (
+                <label style={{ ...fieldStyle, gridColumn: 'span 8' }}>
+                  Approved executor
+                  <select
+                    value={skillDraft.executable.catalogId ?? ''}
+                    onChange={(event) => {
+                      const selected = executorCatalog.find((item) => item.id === event.target.value);
+                      updateSkillExecutable({
+                        catalogId: event.target.value,
+                        image: selected?.image,
+                        command: selected?.command,
+                        args: selected?.args ?? [],
+                        workingDir: selected?.workingDir,
+                        timeoutSeconds: selected?.timeoutSeconds ?? 120,
+                        network: selected?.network ?? 'none',
+                      });
+                    }}
+                    style={inputStyle}
+                  >
+                    <option value="">Choose an approved executor</option>
+                    {executorCatalog.map((executor) => (
+                      <option key={executor.id} value={executor.id}>
+                        {executor.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {skillDraft.executable.mode === 'custom' && (
+                <>
+                  <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                    Container image
+                    <input
+                      value={skillDraft.executable.image ?? ''}
+                      onChange={(event) => updateSkillExecutable({ image: event.target.value })}
+                      placeholder="ghcr.io/org/skill-runner:latest"
+                      style={inputStyle}
+                    />
+                  </label>
+                  <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                    Command
+                    <input
+                      value={skillDraft.executable.command ?? ''}
+                      onChange={(event) => updateSkillExecutable({ command: event.target.value })}
+                      placeholder="python"
+                      style={inputStyle}
+                    />
+                  </label>
+                </>
+              )}
+
+              {skillDraft.executable.mode !== 'none' && (
+                <>
+                  <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                    Args
+                    <textarea
+                      value={listToLines(skillDraft.executable.args)}
+                      onChange={(event) => updateSkillExecutable({ args: linesToList(event.target.value) })}
+                      rows={3}
+                      style={textareaStyle}
+                    />
+                  </label>
+                  <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
+                    Working directory
+                    <input
+                      value={skillDraft.executable.workingDir ?? '/workspace'}
+                      onChange={(event) => updateSkillExecutable({ workingDir: event.target.value })}
+                      style={inputStyle}
+                    />
+                  </label>
+                  <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
+                    Timeout seconds
+                    <input
+                      type="number"
+                      min={10}
+                      max={900}
+                      value={skillDraft.executable.timeoutSeconds}
+                      onChange={(event) => updateSkillExecutable({ timeoutSeconds: Number(event.target.value) })}
+                      style={inputStyle}
+                    />
+                  </label>
+                  <label style={{ ...fieldStyle, gridColumn: 'span 4' }}>
+                    Network policy
+                    <select
+                      value={skillDraft.executable.network}
+                      onChange={(event) => updateSkillExecutable({ network: event.target.value === 'egress' ? 'egress' : 'none' })}
+                      style={inputStyle}
+                    >
+                      <option value="none">No network</option>
+                      <option value="egress">Outbound only</option>
+                    </select>
+                  </label>
+                  <label style={{ ...fieldStyle, gridColumn: 'span 8' }}>
+                    Environment allowlist
+                    <input
+                      value={skillDraft.executable.envAllowlist.join(', ')}
+                      onChange={(event) => updateSkillExecutable({ envAllowlist: linesToList(event.target.value) })}
+                      placeholder="OPTIONAL_ENV_NAME, ANOTHER_ENV_NAME"
+                      style={inputStyle}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+          </section>
+
+          <section style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Generated Skill Package</h2>
+                <p style={{ margin: '6px 0 0', color: '#667085' }}>
+                  These fields render into a portable skill directory containing `SKILL.md`.
+                </p>
+              </div>
+              <div style={{ ...readOnlyFieldStyle, minWidth: 220 }}>
+                <span style={readOnlyLabelStyle}>Directory</span>
+                <strong>{skillPackagePreview.directoryName}/</strong>
+              </div>
+            </div>
+            <pre style={skillPreviewStyle}>{skillPackagePreview.skillMd}</pre>
+          </section>
+
+          <section style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Project Enablement</h2>
+                <p style={{ margin: '6px 0 0', color: '#667085' }}>
+                  Enable reusable skills for the active project: {activeProject?.name ?? 'None selected'}.
+                </p>
+              </div>
+              <button type="button" onClick={saveProjectSkillBindings} disabled={isSavingSkillBindings || !activeProject} style={primaryButtonStyle}>
+                {isSavingSkillBindings ? 'Saving...' : 'Save Project Skills'}
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gap: 10 }}>
+              {agentSkills.length === 0 ? (
+                <div style={{ color: '#667085' }}>Create a skill before enabling project skills.</div>
+              ) : (
+                agentSkills.map((skill, index) => {
+                  const binding = projectSkillBindings.find((item) => item.skillId === skill.id) ?? createBinding(skill, index);
+                  return (
+                    <div key={skill.id} style={projectSkillBindingStyle}>
+                      <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontWeight: 700 }}>
+                        <input
+                          type="checkbox"
+                          checked={binding.enabled}
+                          onChange={(event) => updateProjectSkillBinding(skill.id, { enabled: event.target.checked })}
+                        />
+                        {skill.name || 'Untitled skill'}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={binding.priority}
+                        onChange={(event) => updateProjectSkillBinding(skill.id, { priority: Number(event.target.value) })}
+                        style={{ ...inputStyle, maxWidth: 110 }}
+                        aria-label={`${skill.name || skill.id} priority`}
+                      />
+                      <input
+                        value={binding.notes ?? ''}
+                        onChange={(event) => updateProjectSkillBinding(skill.id, { notes: event.target.value })}
+                        placeholder="Project-specific note"
+                        style={inputStyle}
+                      />
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        </div>
       )}
 
       {activeSetupTab === 'project' && (
@@ -1077,6 +1638,30 @@ const selectedProjectSummaryStyle = {
   background: '#f8fafc',
   color: '#172033',
   fontSize: 13,
+} satisfies CSSProperties;
+
+const projectSkillBindingStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'minmax(180px, 0.8fr) 120px minmax(220px, 1fr)',
+  gap: 12,
+  alignItems: 'center',
+  padding: 12,
+  border: '1px solid #dbe3ee',
+  borderRadius: 12,
+  background: '#f8fafc',
+} satisfies CSSProperties;
+
+const skillPreviewStyle = {
+  maxHeight: 420,
+  overflow: 'auto',
+  padding: 14,
+  border: '1px solid #dbe3ee',
+  borderRadius: 12,
+  background: '#0f172a',
+  color: '#e2e8f0',
+  fontSize: 13,
+  lineHeight: 1.45,
+  whiteSpace: 'pre-wrap',
 } satisfies CSSProperties;
 
 const chatWindowStyle = {
