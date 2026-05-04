@@ -79,7 +79,7 @@ Use temporary passwords for new users and require first-login password changes. 
 
 1. Sign in to the app at the `PUBLIC_APP_URL` printed by the bootstrapper.
 2. Open Preferences.
-3. Configure the provider endpoint and model for each LLM tier.
+3. Configure provider endpoints and models for `LLM_A`, `LLM_B`, and `LLM_C`; at least one must be complete before saving.
 4. Enter provider API keys through the Preferences UI.
 5. Use the connection test before relying on a provider.
 
@@ -95,6 +95,30 @@ Before deploying or changing providers, review:
 
 The default policy requires HTTPS, allows only configured hosts, and blocks private or loopback endpoint resolution.
 
+## Headless Goose Chatbot
+
+The API exposes a headless chatbot route at `POST /api/goose/chat`. Browser or embedding clients send authenticated message history, and the backend routes it through managed Goose when available, with direct LiteLLM endpoint routing as a fallback. Provider keys are not exposed to the client.
+
+The bootstrapper also starts a managed Goose container when `MANAGE_GOOSE=1`. The container uses the official Goose image, runs `goose serve`, and points Goose's OpenAI-compatible provider settings at the managed LiteLLM proxy. The backend prefers this Goose service when `GOOSE_CHATBOT_BACKEND=goose` and falls back to direct LiteLLM routing if Goose is unavailable.
+
+Runtime controls:
+
+- `MANAGE_GOOSE`
+- `GOOSE_IMAGE`
+- `GOOSE_PORT`
+- `INTERNAL_GOOSE_URL`
+- `GOOSE_PROVIDER`
+- `GOOSE_MODEL`
+- `GOOSE_WORKING_DIR`
+- `GOOSE_CHATBOT_BACKEND`
+- `GOOSE_CHATBOT_DEFAULT_TIER`
+- `GOOSE_CHATBOT_MAX_MESSAGES`
+- `GOOSE_CHATBOT_MAX_TOKENS`
+- `GOOSE_CHATBOT_TEMPERATURE`
+- `GOOSE_CHATBOT_SYSTEM_PROMPT`
+
+The route audits `goose_chatbot.message` with endpoint and message counts only. Prompt bodies, responses, bearer tokens, and provider keys must stay out of logs.
+
 ## User Flow
 
 Users should:
@@ -103,7 +127,7 @@ Users should:
 2. Sign in with the temporary Keycloak password.
 3. Change the password when prompted.
 4. Use Preferences only if they are responsible for provider configuration.
-5. Use project workflows for file loading, knowledge review, and Q&A after an admin has configured working LLM tiers.
+5. Use project workflows for file loading, knowledge review, and Q&A after an admin has configured at least one working `LLM_A`, `LLM_B`, or `LLM_C` endpoint.
 
 User account management is handled through Keycloak and `podman_services/keycloak_user_admin.sh`.
 

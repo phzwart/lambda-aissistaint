@@ -12,6 +12,7 @@ containers=(
   "${STACK_NAME}-openbao"
   "${STACK_NAME}-minio"
   "${STACK_NAME}-litellm"
+  "${STACK_NAME}-goose"
   "${STACK_NAME}-gateway"
 )
 
@@ -34,5 +35,5 @@ else
 fi
 
 echo "Remaining listeners on stack ports, if any:"
-ss -ltnp '( sport = :5433 or sport = :8080 or sport = :8200 or sport = :8201 or sport = :9000 or sport = :9001 or sport = :4000 or sport = :8088 or sport = :8443 )' || true
+ss -ltnp '( sport = :5433 or sport = :8080 or sport = :8200 or sport = :8201 or sport = :9000 or sport = :9001 or sport = :4000 or sport = :3284 or sport = :8088 or sport = :8443 )' || true
 

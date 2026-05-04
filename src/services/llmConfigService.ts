@@ -32,6 +32,24 @@ const withSecretMetadata = (config: LlmConfig, index: number): LlmConfig => {
 
 const useApi = () => !appConfig.useMockServices;
 
+const hasProviderKey = (config: LlmConfig) => Boolean(config.token.trim() || config.tokenStored);
+
+const validateRunnableConfig = (config: LlmConfig) => {
+  if (!config.endpoint.trim()) {
+    return `${config.name} needs a provider base URL before it can be tested.`;
+  }
+
+  if (!config.model.trim()) {
+    return `${config.name} needs a provider model before it can be tested.`;
+  }
+
+  if (!hasProviderKey(config)) {
+    return `${config.name} needs a provider API key before it can be tested.`;
+  }
+
+  return '';
+};
+
 export const llmConfigService = {
   async list(): Promise<LlmConfig[]> {
     if (useApi()) {
@@ -53,7 +71,7 @@ export const llmConfigService = {
         endpoint: 'https://api.cborg.lbl.gov',
         model: '',
         token: '',
-        tier: 'high',
+        tier: 'a',
         status: 'idle',
       },
     ];
@@ -121,6 +139,15 @@ export const llmConfigService = {
   },
 
   async testConnection(config: LlmConfig): Promise<Pick<LlmConfig, 'status' | 'message' | 'lastTestedAt'>> {
+    const validationMessage = validateRunnableConfig(config);
+    if (validationMessage) {
+      return {
+        status: 'error',
+        message: validationMessage,
+        lastTestedAt: new Date().toISOString(),
+      };
+    }
+
     if (useApi()) {
       return apiRequest<Pick<LlmConfig, 'status' | 'message' | 'lastTestedAt'>>('/api/llm-config/test', {
         method: 'POST',
@@ -156,6 +183,11 @@ export const llmConfigService = {
   },
 
   async askTestQuestion(config: LlmConfig, question: string): Promise<string> {
+    const validationMessage = validateRunnableConfig(config);
+    if (validationMessage) {
+      throw new Error(validationMessage);
+    }
+
     if (useApi()) {
       const body = await apiRequest<{ answer: string }>('/api/llm-config/chat', {
         method: 'POST',

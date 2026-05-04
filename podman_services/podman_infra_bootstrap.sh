@@ -28,6 +28,7 @@ PROJECT_BUCKET_PREFIX="${PROJECT_BUCKET_PREFIX:-aissistaint-project}"
 PROJECT_LOADED_PREFIX="${PROJECT_LOADED_PREFIX:-loaded}"
 PROJECT_PARSED_PREFIX="${PROJECT_PARSED_PREFIX:-parsed}"
 PROJECT_METADATA_OBJECT_KEY="${PROJECT_METADATA_OBJECT_KEY:-project.json}"
+VITE_LLM_TIERS="${VITE_LLM_TIERS:-A,B,C}"
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-https://aissistaint.localhost:8443,http://localhost:5173,http://127.0.0.1:5173}"
 LLM_ALLOWED_HOSTS="${LLM_ALLOWED_HOSTS:-api.cborg.lbl.gov}"
 LLM_ALLOW_PRIVATE_ENDPOINTS="${LLM_ALLOW_PRIVATE_ENDPOINTS:-false}"
@@ -40,11 +41,24 @@ LITELLM_PORT="${LITELLM_PORT:-4000}"
 LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-}"
 LITELLM_ADMIN_KEY="${LITELLM_ADMIN_KEY:-}"
 LITELLM_API_KEY="${LITELLM_API_KEY:-}"
+LITELLM_API_KEY_MODEL_SCOPE_VERSION="${LITELLM_API_KEY_MODEL_SCOPE_VERSION:-}"
+LITELLM_DATABASE_URL="${LITELLM_DATABASE_URL:-}"
 LITELLM_ADMIN_BROKER_HOST="${LITELLM_ADMIN_BROKER_HOST:-127.0.0.1}"
 LITELLM_ADMIN_BROKER_PORT="${LITELLM_ADMIN_BROKER_PORT:-8788}"
 LITELLM_ADMIN_BROKER_URL="${LITELLM_ADMIN_BROKER_URL:-http://${LITELLM_ADMIN_BROKER_HOST}:${LITELLM_ADMIN_BROKER_PORT}}"
 LITELLM_ADMIN_BROKER_TOKEN="${LITELLM_ADMIN_BROKER_TOKEN:-}"
 LITELLM_SECRET_BROKER_TOKEN="${LITELLM_SECRET_BROKER_TOKEN:-}"
+GOOSE_PORT="${GOOSE_PORT:-3284}"
+GOOSE_PROVIDER="${GOOSE_PROVIDER:-openai}"
+GOOSE_MODEL="${GOOSE_MODEL:-LLM_A}"
+GOOSE_SECRET_KEY="${GOOSE_SECRET_KEY:-}"
+GOOSE_WORKING_DIR="${GOOSE_WORKING_DIR:-/workspace}"
+GOOSE_CHATBOT_BACKEND="${GOOSE_CHATBOT_BACKEND:-goose}"
+GOOSE_CHATBOT_DEFAULT_TIER="${GOOSE_CHATBOT_DEFAULT_TIER:-A}"
+GOOSE_CHATBOT_MAX_MESSAGES="${GOOSE_CHATBOT_MAX_MESSAGES:-24}"
+GOOSE_CHATBOT_MAX_TOKENS="${GOOSE_CHATBOT_MAX_TOKENS:-768}"
+GOOSE_CHATBOT_TEMPERATURE="${GOOSE_CHATBOT_TEMPERATURE:-0.2}"
+GOOSE_CHATBOT_SYSTEM_PROMPT="${GOOSE_CHATBOT_SYSTEM_PROMPT:-You are Goose, a concise AI assistant embedded in AIssistAInt. Answer helpfully, avoid exposing secrets, and ask for missing project context when needed.}"
 SECRET_STORE_PROVIDER="${SECRET_STORE_PROVIDER:-openbao}"
 SECRET_ENCRYPTION_KEY="${SECRET_ENCRYPTION_KEY:-}"
 SECRET_ENCRYPTION_KEY_VERSION="${SECRET_ENCRYPTION_KEY_VERSION:-v1}"
@@ -69,6 +83,7 @@ MANAGE_APP_POSTGRES="${MANAGE_APP_POSTGRES:-1}"
 MANAGE_OPENBAO="${MANAGE_OPENBAO:-1}"
 MANAGE_MINIO="${MANAGE_MINIO:-1}"
 MANAGE_LITELLM="${MANAGE_LITELLM:-1}"
+MANAGE_GOOSE="${MANAGE_GOOSE:-1}"
 
 CADDY_IMAGE="${CADDY_IMAGE:-docker.io/library/caddy:2}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-docker.io/library/postgres:16}"
@@ -77,6 +92,7 @@ OPENBAO_IMAGE="${OPENBAO_IMAGE:-quay.io/openbao/openbao:latest}"
 MINIO_IMAGE="${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-02-18T16-25-55Z}"
 MINIO_MC_IMAGE="${MINIO_MC_IMAGE:-quay.io/minio/mc:latest}"
 LITELLM_IMAGE="${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}"
+GOOSE_IMAGE="${GOOSE_IMAGE:-ghcr.io/aaif-goose/goose:latest}"
 
 CADDY_CONTAINER="${STACK_NAME}-gateway"
 POSTGRES_CONTAINER="${STACK_NAME}-postgres"
@@ -85,6 +101,7 @@ KEYCLOAK_CONTAINER="${STACK_NAME}-keycloak"
 OPENBAO_CONTAINER="${STACK_NAME}-openbao"
 MINIO_CONTAINER="${STACK_NAME}-minio"
 LITELLM_CONTAINER="${STACK_NAME}-litellm"
+GOOSE_CONTAINER="${STACK_NAME}-goose"
 MINIO_CLIENT_ID="${MINIO_CLIENT_ID:-minio-console}"
 OPENBAO_CLIENT_ID="${OPENBAO_CLIENT_ID:-openbao}"
 AISSISTAINT_UI_CLIENT_ID="${AISSISTAINT_UI_CLIENT_ID:-aissistaint-ui}"
@@ -99,6 +116,7 @@ INTERNAL_KEYCLOAK_URL="${INTERNAL_KEYCLOAK_URL:-http://127.0.0.1:8080}"
 INTERNAL_OPENBAO_URL="${INTERNAL_OPENBAO_URL:-http://127.0.0.1:8200}"
 INTERNAL_MINIO_ENDPOINT="${INTERNAL_MINIO_ENDPOINT:-http://127.0.0.1:9000}"
 INTERNAL_LITELLM_URL="${INTERNAL_LITELLM_URL:-http://127.0.0.1:${LITELLM_PORT}}"
+INTERNAL_GOOSE_URL="${INTERNAL_GOOSE_URL:-http://127.0.0.1:${GOOSE_PORT}}"
 GATEWAY_KEYCLOAK_UPSTREAM="${GATEWAY_KEYCLOAK_UPSTREAM:-http://${KEYCLOAK_CONTAINER}:8080}"
 GATEWAY_OPENBAO_UPSTREAM="${GATEWAY_OPENBAO_UPSTREAM:-http://${OPENBAO_CONTAINER}:8200}"
 GATEWAY_MINIO_UPSTREAM="${GATEWAY_MINIO_UPSTREAM:-http://${MINIO_CONTAINER}:9000}"
@@ -143,6 +161,9 @@ BASE_LITELLM_DIR="$BASE_DIR/litellm"
 LITELLM_CONFIG_DIR="$BASE_LITELLM_DIR/config"
 LITELLM_CONFIG_FILE="$LITELLM_CONFIG_DIR/config.yaml"
 LITELLM_SECRET_MANAGER_FILE="$LITELLM_CONFIG_DIR/openbao_secret_manager.py"
+BASE_GOOSE_DIR="$BASE_DIR/goose"
+GOOSE_CONFIG_DIR="$BASE_GOOSE_DIR/config"
+GOOSE_WORKSPACE_DIR="$BASE_GOOSE_DIR/workspace"
 BASE_SECRET_DIR="$BASE_DIR/secrets"
 SECRET_ENCRYPTION_KEY_FILE="${SECRET_ENCRYPTION_KEY_FILE:-$BASE_SECRET_DIR/provider-key-encryption.key}"
 API_SECRET_ENV_FILE="${API_SECRET_ENV_FILE:-$BASE_SECRET_DIR/api-runtime.env}"
@@ -150,6 +171,7 @@ API_REMOVAL_ENV_FILE="${API_REMOVAL_ENV_FILE:-$BASE_SECRET_DIR/api-removal.env}"
 API_LOAD_REMOVAL_SECRETS="${API_LOAD_REMOVAL_SECRETS:-false}"
 LITELLM_ADMIN_BROKER_ENV_FILE="${LITELLM_ADMIN_BROKER_ENV_FILE:-$BASE_SECRET_DIR/litellm-admin-broker.env}"
 LITELLM_SECRET_BROKER_ENV_FILE="${LITELLM_SECRET_BROKER_ENV_FILE:-$BASE_SECRET_DIR/litellm-secret-broker.env}"
+GOOSE_SECRET_ENV_FILE="${GOOSE_SECRET_ENV_FILE:-$BASE_SECRET_DIR/goose.env}"
 BASE_CADDY_DIR="$BASE_DIR/caddy"
 CADDY_CONFIG_DIR="$BASE_CADDY_DIR/config"
 CADDY_DATA_DIR="$BASE_CADDY_DIR/data"
@@ -157,6 +179,7 @@ CADDYFILE="$CADDY_CONFIG_DIR/Caddyfile"
 ENV_FILE="$BASE_DIR/${STACK_NAME}.env"
 RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-$BASE_DIR/${STACK_NAME}-runtime.env}"
 KEYCLOAK_SECRETS_OUT="$BASE_DIR/keycloak-secrets.out"
+PASSWORD_OUT_FILE="${PASSWORD_OUT_FILE:-$BASE_DIR/keycloak-user-passwords.out}"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -314,12 +337,26 @@ rand_hex32() {
   od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
 }
 
+shell_escape() {
+  printf '%q' "$1"
+}
+
+effective_litellm_database_url() {
+  printf '%s' "${LITELLM_DATABASE_URL:-postgresql://$APP_POSTGRES_USER:$APP_POSTGRES_PASSWORD@$APP_POSTGRES_CONTAINER:5432/$APP_POSTGRES_DB}"
+}
+
 load_existing_runtime_env() {
   if [[ -f "$ENV_FILE" ]]; then
     # Preserve generated credentials across container-only restarts. Existing
     # data volumes still expect the passwords that initialized them.
+    # Older env files may contain an unquoted prompt with spaces; skip it here
+    # and let write_runtime_env rewrite it safely.
+    local filtered_env
+    filtered_env="$(mktemp)"
+    sed '/^GOOSE_CHATBOT_SYSTEM_PROMPT=/d' "$ENV_FILE" > "$filtered_env"
     # shellcheck disable=SC1090
-    . "$ENV_FILE"
+    . "$filtered_env"
+    rm -f "$filtered_env"
   fi
 }
 
@@ -338,6 +375,7 @@ initialize_generated_secrets() {
   fi
   : "${LITELLM_ADMIN_BROKER_TOKEN:=sk-$(rand_secret)}"
   : "${LITELLM_SECRET_BROKER_TOKEN:=sk-$(rand_secret)}"
+  : "${GOOSE_SECRET_KEY:=sk-$(rand_secret)}"
   if [[ -z "$SECRET_ENCRYPTION_KEY" && -f "$SECRET_ENCRYPTION_KEY_FILE" ]]; then
     SECRET_ENCRYPTION_KEY="$(tr -d '[:space:]' < "$SECRET_ENCRYPTION_KEY_FILE")"
   fi
@@ -385,6 +423,18 @@ validate_litellm_topology() {
   fi
 }
 
+validate_goose_topology() {
+  if [[ "$MANAGE_GOOSE" != "1" || "$GOOSE_CHATBOT_BACKEND" != "goose" || "$EXPOSE_RAW_SERVICE_PORTS" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ "$INTERNAL_GOOSE_URL" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
+    echo "MANAGE_GOOSE=1 with GOOSE_CHATBOT_BACKEND=goose and EXPOSE_RAW_SERVICE_PORTS=0 requires INTERNAL_GOOSE_URL to point somewhere reachable by the host-run API." >&2
+    echo "Either set EXPOSE_RAW_SERVICE_PORTS=1, run the API inside the Podman network, or set INTERNAL_GOOSE_URL to a reachable external Goose endpoint." >&2
+    exit 1
+  fi
+}
+
 show_container_logs() {
   local name="$1"
   echo "----- $name logs -----" >&2
@@ -406,6 +456,10 @@ assert_container_running() {
 write_runtime_env() {
   local minio_secret="${1:-${MINIO_CLIENT_SECRET:-}}"
   local openbao_secret="${2:-${OPENBAO_CLIENT_SECRET:-}}"
+  local effective_litellm_db_url
+  local escaped_goose_chatbot_system_prompt
+  effective_litellm_db_url="$(effective_litellm_database_url)"
+  escaped_goose_chatbot_system_prompt="$(shell_escape "$GOOSE_CHATBOT_SYSTEM_PROMPT")"
 
   cat > "$ENV_FILE" <<ENV
 STACK_NAME=$STACK_NAME
@@ -418,6 +472,7 @@ API_REMOVAL_ENV_FILE=$API_REMOVAL_ENV_FILE
 API_LOAD_REMOVAL_SECRETS=$API_LOAD_REMOVAL_SECRETS
 LITELLM_ADMIN_BROKER_ENV_FILE=$LITELLM_ADMIN_BROKER_ENV_FILE
 LITELLM_SECRET_BROKER_ENV_FILE=$LITELLM_SECRET_BROKER_ENV_FILE
+GOOSE_SECRET_ENV_FILE=$GOOSE_SECRET_ENV_FILE
 MANAGE_TLS_GATEWAY=$MANAGE_TLS_GATEWAY
 MANAGE_KEYCLOAK_POSTGRES=$MANAGE_KEYCLOAK_POSTGRES
 MANAGE_KEYCLOAK=$MANAGE_KEYCLOAK
@@ -425,6 +480,7 @@ MANAGE_APP_POSTGRES=$MANAGE_APP_POSTGRES
 MANAGE_OPENBAO=$MANAGE_OPENBAO
 MANAGE_MINIO=$MANAGE_MINIO
 MANAGE_LITELLM=$MANAGE_LITELLM
+MANAGE_GOOSE=$MANAGE_GOOSE
 TLS_GATEWAY_ENABLED=$TLS_GATEWAY_ENABLED
 TLS_GATEWAY_PORT=$TLS_GATEWAY_PORT
 TLS_HTTP_PORT=$TLS_HTTP_PORT
@@ -446,6 +502,7 @@ INTERNAL_KEYCLOAK_URL=$INTERNAL_KEYCLOAK_URL
 INTERNAL_OPENBAO_URL=$INTERNAL_OPENBAO_URL
 INTERNAL_MINIO_ENDPOINT=$INTERNAL_MINIO_ENDPOINT
 INTERNAL_LITELLM_URL=$INTERNAL_LITELLM_URL
+INTERNAL_GOOSE_URL=$INTERNAL_GOOSE_URL
 GATEWAY_KEYCLOAK_UPSTREAM=$GATEWAY_KEYCLOAK_UPSTREAM
 GATEWAY_OPENBAO_UPSTREAM=$GATEWAY_OPENBAO_UPSTREAM
 GATEWAY_MINIO_UPSTREAM=$GATEWAY_MINIO_UPSTREAM
@@ -486,11 +543,25 @@ LITELLM_PORT=$LITELLM_PORT
 LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY
 LITELLM_ADMIN_KEY=$LITELLM_ADMIN_KEY
 LITELLM_API_KEY=$LITELLM_API_KEY
+LITELLM_API_KEY_MODEL_SCOPE_VERSION=$LITELLM_API_KEY_MODEL_SCOPE_VERSION
+LITELLM_DATABASE_URL=$effective_litellm_db_url
 LITELLM_ADMIN_BROKER_HOST=$LITELLM_ADMIN_BROKER_HOST
 LITELLM_ADMIN_BROKER_PORT=$LITELLM_ADMIN_BROKER_PORT
 LITELLM_ADMIN_BROKER_URL=$LITELLM_ADMIN_BROKER_URL
 LITELLM_ADMIN_BROKER_TOKEN=$LITELLM_ADMIN_BROKER_TOKEN
 LITELLM_SECRET_BROKER_TOKEN=$LITELLM_SECRET_BROKER_TOKEN
+GOOSE_CONTAINER=$GOOSE_CONTAINER
+GOOSE_IMAGE=$GOOSE_IMAGE
+GOOSE_PORT=$GOOSE_PORT
+GOOSE_PROVIDER=$GOOSE_PROVIDER
+GOOSE_MODEL=$GOOSE_MODEL
+GOOSE_WORKING_DIR=$GOOSE_WORKING_DIR
+GOOSE_CHATBOT_BACKEND=$GOOSE_CHATBOT_BACKEND
+GOOSE_CHATBOT_DEFAULT_TIER=$GOOSE_CHATBOT_DEFAULT_TIER
+GOOSE_CHATBOT_MAX_MESSAGES=$GOOSE_CHATBOT_MAX_MESSAGES
+GOOSE_CHATBOT_MAX_TOKENS=$GOOSE_CHATBOT_MAX_TOKENS
+GOOSE_CHATBOT_TEMPERATURE=$GOOSE_CHATBOT_TEMPERATURE
+GOOSE_CHATBOT_SYSTEM_PROMPT=$escaped_goose_chatbot_system_prompt
 PROJECT_BUCKET_PREFIX=$PROJECT_BUCKET_PREFIX
 PROJECT_LOADED_PREFIX=$PROJECT_LOADED_PREFIX
 PROJECT_PARSED_PREFIX=$PROJECT_PARSED_PREFIX
@@ -507,6 +578,7 @@ VITE_KEYCLOAK_REALM=$KC_REALM
 VITE_KEYCLOAK_CLIENT_ID=$AISSISTAINT_UI_CLIENT_ID
 VITE_API_BASE_URL=
 VITE_OPENBAO_URL=$PUBLIC_OPENBAO_URL
+VITE_LLM_TIERS=$VITE_LLM_TIERS
 CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS
 LLM_ALLOWED_HOSTS=$LLM_ALLOWED_HOSTS
 LLM_ALLOW_PRIVATE_ENDPOINTS=$LLM_ALLOW_PRIVATE_ENDPOINTS
@@ -534,6 +606,7 @@ API_REMOVAL_ENV_FILE=$API_REMOVAL_ENV_FILE
 API_LOAD_REMOVAL_SECRETS=$API_LOAD_REMOVAL_SECRETS
 LITELLM_ADMIN_BROKER_ENV_FILE=$LITELLM_ADMIN_BROKER_ENV_FILE
 LITELLM_SECRET_BROKER_ENV_FILE=$LITELLM_SECRET_BROKER_ENV_FILE
+GOOSE_SECRET_ENV_FILE=$GOOSE_SECRET_ENV_FILE
 PUBLIC_APP_URL=$PUBLIC_APP_URL
 PUBLIC_KEYCLOAK_URL=$PUBLIC_KEYCLOAK_URL
 PUBLIC_OPENBAO_URL=$PUBLIC_OPENBAO_URL
@@ -543,6 +616,7 @@ INTERNAL_KEYCLOAK_URL=$INTERNAL_KEYCLOAK_URL
 INTERNAL_OPENBAO_URL=$INTERNAL_OPENBAO_URL
 INTERNAL_MINIO_ENDPOINT=$INTERNAL_MINIO_ENDPOINT
 INTERNAL_LITELLM_URL=$INTERNAL_LITELLM_URL
+INTERNAL_GOOSE_URL=$INTERNAL_GOOSE_URL
 MINIO_ENDPOINT=$MINIO_ENDPOINT
 MINIO_REMOVAL_POLICY_NAME=$MINIO_REMOVAL_POLICY_NAME
 LITELLM_ADMIN_BROKER_URL=$LITELLM_ADMIN_BROKER_URL
@@ -557,6 +631,7 @@ VITE_KEYCLOAK_REALM=$KC_REALM
 VITE_KEYCLOAK_CLIENT_ID=$AISSISTAINT_UI_CLIENT_ID
 VITE_API_BASE_URL=
 VITE_OPENBAO_URL=$PUBLIC_OPENBAO_URL
+VITE_LLM_TIERS=$VITE_LLM_TIERS
 CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS
 LLM_ALLOWED_HOSTS=$LLM_ALLOWED_HOSTS
 LLM_ALLOW_PRIVATE_ENDPOINTS=$LLM_ALLOW_PRIVATE_ENDPOINTS
@@ -564,6 +639,12 @@ LLM_ALLOW_HTTP_ENDPOINTS=$LLM_ALLOW_HTTP_ENDPOINTS
 LLM_ALLOW_ANY_HOSTS=$LLM_ALLOW_ANY_HOSTS
 LLM_DEV_MODE=$LLM_DEV_MODE
 LLM_REQUEST_TIMEOUT_MS=$LLM_REQUEST_TIMEOUT_MS
+GOOSE_CHATBOT_BACKEND=$GOOSE_CHATBOT_BACKEND
+GOOSE_CHATBOT_DEFAULT_TIER=$GOOSE_CHATBOT_DEFAULT_TIER
+GOOSE_CHATBOT_MAX_MESSAGES=$GOOSE_CHATBOT_MAX_MESSAGES
+GOOSE_CHATBOT_MAX_TOKENS=$GOOSE_CHATBOT_MAX_TOKENS
+GOOSE_CHATBOT_TEMPERATURE=$GOOSE_CHATBOT_TEMPERATURE
+GOOSE_CHATBOT_SYSTEM_PROMPT=$escaped_goose_chatbot_system_prompt
 SECRET_STORE_PROVIDER=$SECRET_STORE_PROVIDER
 SECRET_ENCRYPTION_KEY_FILE=$SECRET_ENCRYPTION_KEY_FILE
 SECRET_ENCRYPTION_KEY_VERSION=$SECRET_ENCRYPTION_KEY_VERSION
@@ -577,8 +658,10 @@ ENV
     "MINIO_APP_ACCESS_KEY=$MINIO_APP_ACCESS_KEY" \
     "MINIO_APP_SECRET_KEY=$MINIO_APP_SECRET_KEY" \
     "LITELLM_API_KEY=$LITELLM_API_KEY" \
+    "LITELLM_API_KEY_MODEL_SCOPE_VERSION=$LITELLM_API_KEY_MODEL_SCOPE_VERSION" \
     "LITELLM_ADMIN_BROKER_TOKEN=$LITELLM_ADMIN_BROKER_TOKEN" \
     "OPENBAO_APP_TOKEN=${OPENBAO_APP_TOKEN:-}" \
+    "GOOSE_SECRET_KEY=$GOOSE_SECRET_KEY" \
     "SECRET_ENCRYPTION_KEY_FILE=$SECRET_ENCRYPTION_KEY_FILE"
 
   write_secret_env_file "$API_REMOVAL_ENV_FILE" \
@@ -591,6 +674,8 @@ ENV
     "LITELLM_ADMIN_BROKER_HOST=$LITELLM_ADMIN_BROKER_HOST" \
     "LITELLM_ADMIN_BROKER_PORT=$LITELLM_ADMIN_BROKER_PORT" \
     "INTERNAL_LITELLM_URL=$INTERNAL_LITELLM_URL" \
+    "LITELLM_SECRET_BROKER_URL=http://127.0.0.1:$API_PORT" \
+    "LITELLM_SECRET_BROKER_TOKEN=$LITELLM_SECRET_BROKER_TOKEN" \
     "LLM_ALLOWED_HOSTS=$LLM_ALLOWED_HOSTS" \
     "LLM_ALLOW_PRIVATE_ENDPOINTS=$LLM_ALLOW_PRIVATE_ENDPOINTS" \
     "LLM_ALLOW_HTTP_ENDPOINTS=$LLM_ALLOW_HTTP_ENDPOINTS" \
@@ -598,7 +683,13 @@ ENV
     "LLM_DEV_MODE=$LLM_DEV_MODE"
 
   write_secret_env_file "$LITELLM_SECRET_BROKER_ENV_FILE" \
-    "LITELLM_SECRET_BROKER_TOKEN=$LITELLM_SECRET_BROKER_TOKEN"
+    "LITELLM_SECRET_BROKER_TOKEN=$LITELLM_SECRET_BROKER_TOKEN" \
+    "DATABASE_URL=$effective_litellm_db_url" \
+    "STORE_MODEL_IN_DB=True"
+
+  write_secret_env_file "$GOOSE_SECRET_ENV_FILE" \
+    "GOOSE_SECRET_KEY=$GOOSE_SECRET_KEY" \
+    "OPENAI_API_KEY=$LITELLM_API_KEY"
 }
 
 write_openbao_config() {
@@ -669,6 +760,7 @@ model_list: []
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
   key_management_system: custom
   key_management_settings:
     custom_secret_manager: openbao_secret_manager.OpenBaoSecretManager
@@ -686,13 +778,21 @@ import urllib.parse
 import urllib.request
 
 try:
-    from litellm.secret_managers.main import CustomSecretManager
-except Exception:  # pragma: no cover - keeps the module importable across LiteLLM releases
-    class CustomSecretManager:
-        pass
+    from litellm.integrations.custom_secret_manager import CustomSecretManager
+except Exception:
+    try:
+        from litellm.types.secret_managers.main import CustomSecretManager
+    except Exception:
+        from litellm.secret_managers.main import CustomSecretManager
 
 
 class OpenBaoSecretManager(CustomSecretManager):
+    def __init__(self):
+        try:
+            super().__init__(secret_manager_name="openbao_secret_manager")
+        except TypeError:
+            super().__init__()
+
     def _read_openbao_secret(self, secret_name):
         if not secret_name:
             return None
@@ -854,14 +954,14 @@ POLICY
 }
 
 prepare_dirs() {
-  mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR"
-  mkdir -p "$BASE_OPENBAO_DIR" "$BASE_MINIO_DIR" "$BASE_LITELLM_DIR" "$BASE_KEYCLOAK_DIR" "$BASE_APP_POSTGRES_DIR" "$BASE_CADDY_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$BASE_SECRET_DIR"
+  mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR" "$GOOSE_CONFIG_DIR" "$GOOSE_WORKSPACE_DIR"
+  mkdir -p "$BASE_OPENBAO_DIR" "$BASE_MINIO_DIR" "$BASE_LITELLM_DIR" "$BASE_GOOSE_DIR" "$BASE_KEYCLOAK_DIR" "$BASE_APP_POSTGRES_DIR" "$BASE_CADDY_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$BASE_SECRET_DIR"
   chmod 700 "$BASE_DIR" "$BASE_OPENBAO_DIR" "$BASE_SECRET_DIR" 2>/dev/null || true
 
   if [[ "$CLEAN_DATA" == "1" ]]; then
     warn "CLEAN_DATA=1 set. Removing data under $BASE_DIR"
-    rm -rf "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$BASE_SECRET_DIR" "$OPENBAO_INIT_FILE" "$ENV_FILE" "$RUNTIME_ENV_FILE" "$KEYCLOAK_SECRETS_OUT" "$MINIO_POLICY_FILE" "$MINIO_APP_POLICY_FILE" "$MINIO_REMOVAL_POLICY_FILE"
-    mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$BASE_SECRET_DIR"
+    rm -rf "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR" "$GOOSE_CONFIG_DIR" "$GOOSE_WORKSPACE_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$BASE_SECRET_DIR" "$OPENBAO_INIT_FILE" "$ENV_FILE" "$RUNTIME_ENV_FILE" "$KEYCLOAK_SECRETS_OUT" "$MINIO_POLICY_FILE" "$MINIO_APP_POLICY_FILE" "$MINIO_REMOVAL_POLICY_FILE"
+    mkdir -p "$POSTGRES_DATA_DIR" "$APP_POSTGRES_DATA_DIR" "$OPENBAO_DATA_DIR" "$OPENBAO_CONFIG_DIR" "$MINIO_DATA_DIR" "$MINIO_MC_DIR" "$LITELLM_CONFIG_DIR" "$GOOSE_CONFIG_DIR" "$GOOSE_WORKSPACE_DIR" "$CADDY_CONFIG_DIR" "$CADDY_DATA_DIR" "$BASE_SECRET_DIR"
     chmod 700 "$BASE_SECRET_DIR" 2>/dev/null || true
   fi
 
@@ -890,6 +990,7 @@ pull_images() {
   [[ "$MANAGE_OPENBAO" == "1" ]] && podman pull "$OPENBAO_IMAGE" >/dev/null
   [[ "$MANAGE_MINIO" == "1" ]] && podman pull "$MINIO_IMAGE" >/dev/null
   [[ "$MANAGE_LITELLM" == "1" ]] && podman pull "$LITELLM_IMAGE" >/dev/null
+  [[ "$MANAGE_GOOSE" == "1" ]] && podman pull "$GOOSE_IMAGE" >/dev/null
   podman pull "$MINIO_MC_IMAGE" >/dev/null
 }
 
@@ -904,10 +1005,11 @@ start_infra() {
 
   pull_images
 
-  for c in "$CADDY_CONTAINER" "$LITELLM_CONTAINER" "$MINIO_CONTAINER" "$OPENBAO_CONTAINER" "$KEYCLOAK_CONTAINER" "$APP_POSTGRES_CONTAINER" "$POSTGRES_CONTAINER"; do
+  for c in "$CADDY_CONTAINER" "$GOOSE_CONTAINER" "$LITELLM_CONTAINER" "$MINIO_CONTAINER" "$OPENBAO_CONTAINER" "$KEYCLOAK_CONTAINER" "$APP_POSTGRES_CONTAINER" "$POSTGRES_CONTAINER"; do
     local manage_container=1
     case "$c" in
       "$CADDY_CONTAINER") manage_container="$MANAGE_TLS_GATEWAY" ;;
+      "$GOOSE_CONTAINER") manage_container="$MANAGE_GOOSE" ;;
       "$LITELLM_CONTAINER") manage_container="$MANAGE_LITELLM" ;;
       "$MINIO_CONTAINER") manage_container="$MANAGE_MINIO" ;;
       "$OPENBAO_CONTAINER") manage_container="$MANAGE_OPENBAO" ;;
@@ -1079,17 +1181,18 @@ start_litellm() {
 
   assert_container_running "$LITELLM_CONTAINER"
 
-  if [[ -z "$LITELLM_API_KEY" ]]; then
+  if [[ -z "$LITELLM_API_KEY" || "$LITELLM_API_KEY_MODEL_SCOPE_VERSION" != "all-models-v1" ]]; then
     info "Generating LiteLLM runtime chat key"
     wait_for_http_200 "$INTERNAL_LITELLM_URL/health/liveliness" "LiteLLM" 60 2 || {
       show_container_logs "$LITELLM_CONTAINER"
       exit 1
     }
-    local key_response generated_key
+    local key_response generated_key runtime_key_alias
+    runtime_key_alias="aissistaint-runtime-chat-$(date +%s)"
     key_response="$(curl -fsS -X POST "$INTERNAL_LITELLM_URL/key/generate" \
       -H "Authorization: Bearer $LITELLM_ADMIN_KEY" \
       -H "Content-Type: application/json" \
-      -d '{"models":[],"duration":"365d","key_alias":"aissistaint-runtime-chat"}')"
+      -d "{\"duration\":\"365d\",\"key_alias\":\"$runtime_key_alias\"}")"
     generated_key="$(printf '%s' "$key_response" | jq -r '.key // .token // empty')"
     if [[ -z "$generated_key" ]]; then
       echo "LiteLLM runtime key generation did not return a key." >&2
@@ -1099,8 +1202,45 @@ start_litellm() {
     # shellcheck disable=SC1090
     . "$ENV_FILE"
     LITELLM_API_KEY="$generated_key"
+    LITELLM_API_KEY_MODEL_SCOPE_VERSION="all-models-v1"
     write_runtime_env
   fi
+}
+
+start_goose() {
+  if [[ "$MANAGE_GOOSE" != "1" ]]; then
+    info "Skipping managed Goose setup (MANAGE_GOOSE=$MANAGE_GOOSE)"
+    return 0
+  fi
+
+  local goose_ports=()
+  if [[ "$EXPOSE_RAW_SERVICE_PORTS" == "1" ]]; then
+    goose_ports=(-p "127.0.0.1:${GOOSE_PORT}:3284")
+  fi
+
+  if container_exists "$GOOSE_CONTAINER"; then
+    info "Removing existing container $GOOSE_CONTAINER"
+    podman rm -f "$GOOSE_CONTAINER" >/dev/null || true
+  fi
+
+  info "Starting Goose headless server"
+  podman run -d \
+    --name "$GOOSE_CONTAINER" \
+    --network "$NETWORK_NAME" \
+    "${goose_ports[@]}" \
+    -v "$GOOSE_CONFIG_DIR:/home/goose/.config/goose:Z" \
+    -v "$GOOSE_WORKSPACE_DIR:$GOOSE_WORKING_DIR:Z" \
+    --env-file "$GOOSE_SECRET_ENV_FILE" \
+    -e GOOSE_PROVIDER="$GOOSE_PROVIDER" \
+    -e GOOSE_MODEL="$GOOSE_MODEL" \
+    -e GOOSE_DISABLE_KEYRING=1 \
+    -e OPENAI_HOST="http://${LITELLM_CONTAINER}:4000" \
+    -e OPENAI_BASE_URL="http://${LITELLM_CONTAINER}:4000" \
+    -e GOOSE_SECRET_KEY="$GOOSE_SECRET_KEY" \
+    "$GOOSE_IMAGE" \
+    serve --host 0.0.0.0 --port 3284 >/dev/null
+
+  assert_container_running "$GOOSE_CONTAINER"
 }
 
 configure_keycloak() {
@@ -1496,6 +1636,7 @@ Admin endpoints:
   OpenBao UI:             $PUBLIC_OPENBAO_URL/ui
   LiteLLM proxy:          $INTERNAL_LITELLM_URL
   LiteLLM admin broker:   $LITELLM_ADMIN_BROKER_URL
+  Goose headless server:  $INTERNAL_GOOSE_URL
 
 Important local files:
   Admin/bootstrap env:    $ENV_FILE
@@ -1515,6 +1656,7 @@ Containers:
   $OPENBAO_CONTAINER
   $MINIO_CONTAINER
   $LITELLM_CONTAINER
+  $GOOSE_CONTAINER
 
 Realm and access model:
   Realm:                  $KC_REALM
@@ -1537,6 +1679,7 @@ Service management:
   OpenBao managed:        $MANAGE_OPENBAO
   MinIO managed:          $MANAGE_MINIO
   LiteLLM managed:        $MANAGE_LITELLM
+  Goose managed:          $MANAGE_GOOSE
 
 Next steps:
   1. Trust the local TLS CA for browser access.
@@ -1560,7 +1703,7 @@ Next steps:
   4. Open the app and finish admin configuration:
        $PUBLIC_APP_URL
 
-     Sign in, open Preferences, configure provider endpoints/models for each LLM tier,
+     Sign in, open Preferences, configure provider endpoints/models for LLM_A, LLM_B, and LLM_C,
      and keep provider API keys in the Preferences/OpenBao flow rather than repo env files.
 
   5. Review operator guidance:
@@ -1589,12 +1732,14 @@ main() {
   write_secret_key_file
   write_runtime_env
   validate_litellm_topology
+  validate_goose_topology
   info "Using HOST_IP=$HOST_IP"
   start_infra
   configure_keycloak
   configure_minio
   configure_openbao
   start_litellm
+  start_goose
   print_summary
 }
 

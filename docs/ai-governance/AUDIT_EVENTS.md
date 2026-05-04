@@ -26,7 +26,7 @@ AIssistAInt audit events are structured, non-secret operational records. They ar
 - `resource_type`: controlled value such as `auth`, `llm_config`, `litellm_model`, `litellm_secret`, `project`, or `secret_store`.
 - `resource_id`: project id, model alias, or other non-secret identifier when available.
 - `outcome`: `success`, `failure`, or `denied`.
-- `metadata`: bounded non-secret facts such as counts, tier, route, status, model alias, and question length.
+- `metadata`: bounded non-secret facts such as counts, endpoint name, route, status, model alias, and question length.
 
 ## Events To Emit
 
@@ -36,6 +36,7 @@ AIssistAInt audit events are structured, non-secret operational records. They ar
 | `llm_config.save` | User saves LLM provider config | Provider key, raw request body |
 | `llm_config.test` | User tests LLM config | Prompt body, provider key |
 | `llm_config.chat` | User sends a test chat question | Full question, response body |
+| `goose_chatbot.message` | User sends message history to the headless Goose chatbot | Message content, response body, provider key |
 | `llm_config.secrets_delete` | User clears LLM secrets | Secret values |
 | `litellm_model.configure` | API/admin broker configures a LiteLLM alias | Provider key, admin key |
 | `litellm_secret.read` | LiteLLM resolves a provider key alias | Decrypted provider key |

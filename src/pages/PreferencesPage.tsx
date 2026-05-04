@@ -7,9 +7,9 @@ import { useWorkflowStore } from '../state/workflowStore';
 import type { ConnectionStatus, LlmConfig, LlmTier, Project } from '../types/domain';
 
 const tierLabels: Record<LlmTier, string> = {
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
+  a: 'A',
+  b: 'B',
+  c: 'C',
 };
 
 const statusStyles: Record<ConnectionStatus, { background: string; color: string }> = {
@@ -21,11 +21,11 @@ const statusStyles: Record<ConnectionStatus, { background: string; color: string
 
 const createConfig = (index = 0): LlmConfig => ({
   id: crypto.randomUUID(),
-  name: `LLM_${appConfig.llmTiers[index] ?? 'medium'}`,
+  name: `LLM_${(appConfig.llmTiers[index] ?? 'a').toUpperCase()}`,
   endpoint: '',
   model: '',
   token: '',
-  tier: appConfig.llmTiers[index] ?? 'medium',
+  tier: appConfig.llmTiers[index] ?? 'a',
   status: 'idle',
 });
 
@@ -33,8 +33,8 @@ const normalizeConfigs = (configs: LlmConfig[]) =>
   Array.from({ length: appConfig.llmEndpointCount }, (_, index) => ({
     ...createConfig(index),
     ...(configs[index] ?? {}),
-    name: `LLM_${appConfig.llmTiers[index] ?? 'medium'}`,
-    tier: appConfig.llmTiers[index] ?? 'medium',
+    name: `LLM_${(appConfig.llmTiers[index] ?? 'a').toUpperCase()}`,
+    tier: appConfig.llmTiers[index] ?? 'a',
     model: configs[index]?.model ?? '',
   }));
 
@@ -497,7 +497,7 @@ export function PreferencesPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
               <div>
                 <h2 style={{ margin: 0 }}>LiteLLM Model {activeConfigIndex + 1}</h2>
-                <p style={{ margin: '6px 0 0', color: '#667085' }}>Tier: {tierLabels[activeConfig.tier]}</p>
+                <p style={{ margin: '6px 0 0', color: '#667085' }}>Endpoint: LLM_{tierLabels[activeConfig.tier]}</p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <span style={{ ...pillStyle, ...statusStyles[activeConfig.status] }}>
@@ -526,8 +526,8 @@ export function PreferencesPage() {
                 <strong>{activeConfig.name}</strong>
               </div>
               <div style={{ ...readOnlyFieldStyle, gridColumn: 'span 6' }}>
-                <span style={readOnlyLabelStyle}>Fixed tier</span>
-                <strong>{tierLabels[activeConfig.tier]}</strong>
+                <span style={readOnlyLabelStyle}>Fixed LiteLLM endpoint</span>
+                <strong>LLM_{tierLabels[activeConfig.tier]}</strong>
               </div>
               <label style={{ ...fieldStyle, gridColumn: 'span 12' }}>
                 Provider Base URL
@@ -611,7 +611,7 @@ export function PreferencesPage() {
             >
               {configs.map((config, index) => (
                 <option key={config.id} value={config.id}>
-                  {config.name.trim() || `LiteLLM Model ${index + 1}`} ({tierLabels[config.tier]})
+                  {config.name.trim() || `LiteLLM Model ${index + 1}`} (LLM_{tierLabels[config.tier]})
                 </option>
               ))}
             </select>

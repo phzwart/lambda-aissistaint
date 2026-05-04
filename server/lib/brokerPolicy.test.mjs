@@ -6,34 +6,32 @@ import {
   liteLlmSecretReferenceForAlias,
 } from './brokerPolicy.mjs';
 
-test('isAllowedLiteLlmAlias accepts scoped AIssistAInt tier aliases', () => {
-  assert.equal(isAllowedLiteLlmAlias('aissistaint-user_123-high'), true);
-  assert.equal(isAllowedLiteLlmAlias('aissistaint-research-agent-medium'), true);
-  assert.equal(isAllowedLiteLlmAlias('aissistaint-u-low'), true);
+test('isAllowedLiteLlmAlias accepts fixed AIssistAInt model aliases', () => {
+  assert.equal(isAllowedLiteLlmAlias('LLM_A'), true);
+  assert.equal(isAllowedLiteLlmAlias('LLM_B'), true);
+  assert.equal(isAllowedLiteLlmAlias('LLM_C'), true);
 });
 
 test('isAllowedLiteLlmAlias rejects aliases outside the namespace or tier set', () => {
-  assert.equal(isAllowedLiteLlmAlias('other-user-high'), false);
+  assert.equal(isAllowedLiteLlmAlias('other-user-a'), false);
   assert.equal(isAllowedLiteLlmAlias('aissistaint-user-admin'), false);
-  assert.equal(isAllowedLiteLlmAlias('aissistaint-user-high-extra'), false);
-  assert.equal(isAllowedLiteLlmAlias('aissistaint-User-high'), false);
-  assert.equal(isAllowedLiteLlmAlias('aissistaint--high'), false);
+  assert.equal(isAllowedLiteLlmAlias('LLM_D'), false);
+  assert.equal(isAllowedLiteLlmAlias('llm_a'), false);
+  assert.equal(isAllowedLiteLlmAlias('LLM_A_extra'), false);
 });
 
-test('isAllowedLiteLlmAlias enforces bounded user segment length', () => {
-  const fortyEight = 'a'.repeat(48);
-  const fortyNine = 'a'.repeat(49);
-
-  assert.equal(isAllowedLiteLlmAlias(`aissistaint-${fortyEight}-high`), true);
-  assert.equal(isAllowedLiteLlmAlias(`aissistaint-${fortyNine}-high`), false);
+test('isAllowedLiteLlmAlias rejects legacy scoped aliases', () => {
+  assert.equal(isAllowedLiteLlmAlias('aissistaint-user_123-a'), false);
+  assert.equal(isAllowedLiteLlmAlias('aissistaint-research-agent-b'), false);
+  assert.equal(isAllowedLiteLlmAlias('aissistaint-u-c'), false);
 });
 
 test('secret references must exactly match the model alias namespace', () => {
-  const alias = 'aissistaint-user_123-high';
+  const alias = 'LLM_A';
 
-  assert.equal(liteLlmSecretReferenceForAlias(alias), 'aissistaint://aissistaint-user_123-high');
-  assert.equal(isMatchingLiteLlmSecretReference(alias, 'aissistaint://aissistaint-user_123-high'), true);
-  assert.equal(isMatchingLiteLlmSecretReference(alias, 'openbao://aissistaint-user_123-high'), false);
-  assert.equal(isMatchingLiteLlmSecretReference(alias, 'aissistaint://aissistaint-other-high'), false);
+  assert.equal(liteLlmSecretReferenceForAlias(alias), 'aissistaint://LLM_A');
+  assert.equal(isMatchingLiteLlmSecretReference(alias, 'aissistaint://LLM_A'), true);
+  assert.equal(isMatchingLiteLlmSecretReference(alias, 'openbao://LLM_A'), false);
+  assert.equal(isMatchingLiteLlmSecretReference(alias, 'aissistaint://LLM_B'), false);
   assert.equal(isMatchingLiteLlmSecretReference(alias, ''), false);
 });

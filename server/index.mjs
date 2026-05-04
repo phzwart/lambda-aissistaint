@@ -93,16 +93,27 @@ const liteLlmAdminBrokerUrl = (process.env.LITELLM_ADMIN_BROKER_URL ?? 'http://1
 const liteLlmAdminBrokerToken = process.env.LITELLM_ADMIN_BROKER_TOKEN ?? '';
 const liteLlmSecretBrokerToken = process.env.LITELLM_SECRET_BROKER_TOKEN ?? '';
 const secretEncryptionKeyVersion = process.env.SECRET_ENCRYPTION_KEY_VERSION ?? 'v1';
+const gooseChatbotBackend = (process.env.GOOSE_CHATBOT_BACKEND ?? 'litellm').toLowerCase();
+const internalGooseUrl = (process.env.INTERNAL_GOOSE_URL ?? '').replace(/\/+$/g, '');
+const gooseSecretKey = process.env.GOOSE_SECRET_KEY ?? '';
+const gooseWorkingDir = process.env.GOOSE_WORKING_DIR ?? '/workspace';
+const gooseChatbotDefaultTier = (process.env.GOOSE_CHATBOT_DEFAULT_TIER ?? 'a').toLowerCase();
+const gooseChatbotMaxMessages = Number.parseInt(process.env.GOOSE_CHATBOT_MAX_MESSAGES ?? '24', 10);
+const gooseChatbotMaxTokens = Number.parseInt(process.env.GOOSE_CHATBOT_MAX_TOKENS ?? '768', 10);
+const gooseChatbotTemperature = Number.parseFloat(process.env.GOOSE_CHATBOT_TEMPERATURE ?? '0.2');
+const gooseChatbotSystemPrompt =
+  process.env.GOOSE_CHATBOT_SYSTEM_PROMPT ??
+  'You are Goose, a concise AI assistant embedded in AIssistAInt. Answer helpfully, avoid exposing secrets, and ask for missing project context when needed.';
 const validateLlmEndpoint = createLlmEndpointValidator({
   allowedHosts: allowedLlmHosts,
   allowPrivateEndpoints: allowPrivateLlmEndpoints,
   allowHttpEndpoints: allowHttpLlmEndpoints,
 });
-const llmTiers = (process.env.VITE_LLM_TIERS ?? 'high,medium,low')
+const llmTiers = (process.env.VITE_LLM_TIERS ?? 'A,B,C')
   .split(',')
   .map((tier) => tier.trim().toLowerCase())
-  .filter((tier) => ['high', 'medium', 'low'].includes(tier));
-const configuredLlmTiers = llmTiers.length > 0 ? llmTiers : ['high', 'medium', 'low'];
+  .filter((tier) => ['a', 'b', 'c'].includes(tier));
+const configuredLlmTiers = llmTiers.length > 0 ? llmTiers : ['a', 'b', 'c'];
 const llmEndpointCount = configuredLlmTiers.length;
 
 if (!openBaoToken) {
@@ -631,15 +642,9 @@ const dataApiPathForSecretPath = (path) => `/v1/${openBaoKvMount}/data/${path}`;
 const aliasPath = (alias) => `${openBaoPrefix}/litellm/aliases/${encodeURIComponent(alias)}`;
 const aliasDataApiPath = (alias) => dataApiPathForSecretPath(aliasPath(alias));
 
-const defaultTier = (index) => configuredLlmTiers[index] ?? 'medium';
-const systemLlmName = (index) => `LLM_${defaultTier(index)}`;
-const liteLlmSafeSegment = (value) =>
-  String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || 'unknown-user';
-const liteLlmModelAlias = (user, index) => `aissistaint-${liteLlmSafeSegment(user?.sub ?? user?.preferred_username)}-${defaultTier(index)}`;
+const defaultTier = (index) => configuredLlmTiers[index] ?? 'a';
+const systemLlmName = (index) => `LLM_${defaultTier(index).toUpperCase()}`;
+const liteLlmModelAlias = (_user, index) => systemLlmName(index);
 const liteLlmSecretReference = (user, index) => `aissistaint://${liteLlmModelAlias(user, index)}`;
 
 const chatCompletionsUrl = (baseUrl) => {
@@ -721,7 +726,7 @@ const configureLiteLlmModel = async (user, index, { endpoint, model }) => {
     resourceType: 'litellm_model',
     resourceId: modelAlias,
     outcome: response.ok ? 'success' : 'failure',
-    metadata: { status: response.status, tier: defaultTier(index) },
+    metadata: { status: response.status, endpoint: systemLlmName(index) },
   });
 
   if (!response.ok) {
@@ -731,11 +736,23 @@ const configureLiteLlmModel = async (user, index, { endpoint, model }) => {
   return modelAlias;
 };
 
-const callLlmChatEndpoint = async ({ modelAlias }, question) => {
+const callLlmChatEndpoint = async (
+  { modelAlias },
+  messages,
+  { maxTokens = 128, temperature = 0 } = {},
+) => {
   if (!liteLlmApiKey) {
     throw new Error('LiteLLM API key is not configured on the backend.');
   }
 
+  const chatMessages = Array.isArray(messages)
+    ? messages
+    : [
+        {
+          role: 'user',
+          content: String(messages ?? ''),
+        },
+      ];
   const url = `${liteLlmUrl}/chat/completions`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
@@ -749,14 +766,9 @@ const callLlmChatEndpoint = async ({ modelAlias }, question) => {
     },
     body: JSON.stringify({
       model: modelAlias,
-      messages: [
-        {
-          role: 'user',
-          content: question,
-        },
-      ],
-      max_tokens: 128,
-      temperature: 0,
+      messages: chatMessages,
+      max_tokens: maxTokens,
+      temperature,
     }),
   }).finally(() => clearTimeout(timeout));
   const body = await jsonResponse(response);
@@ -782,6 +794,154 @@ const extractLlmAnswer = (body) =>
   body.output_text ??
   body.response ??
   JSON.stringify(body);
+
+const normalizeChatRole = (role) => {
+  const normalized = String(role ?? '').toLowerCase();
+  return ['system', 'user', 'assistant'].includes(normalized) ? normalized : 'user';
+};
+
+const sanitizeGooseMessages = (messages) => {
+  if (!Array.isArray(messages)) {
+    throw Object.assign(new Error('Messages must be an array.'), { status: 400 });
+  }
+
+  const boundedMaxMessages = Number.isFinite(gooseChatbotMaxMessages) && gooseChatbotMaxMessages > 0 ? gooseChatbotMaxMessages : 24;
+  const sanitized = messages
+    .slice(-boundedMaxMessages)
+    .map((message) => ({
+      role: normalizeChatRole(message?.role),
+      content: String(message?.content ?? message?.text ?? '').trim(),
+    }))
+    .filter((message) => message.content);
+
+  if (sanitized.length === 0 || !sanitized.some((message) => message.role === 'user')) {
+    throw Object.assign(new Error('At least one user message is required.'), { status: 400 });
+  }
+
+  return sanitized;
+};
+
+const gooseTierIndex = (tier) => {
+  const requestedTier = String(tier || gooseChatbotDefaultTier).toLowerCase();
+  const index = configuredLlmTiers.indexOf(requestedTier);
+  return index >= 0 ? index : 0;
+};
+
+const loadGooseChatbotConfig = async (user, tier) => {
+  const index = gooseTierIndex(tier);
+  return loadRunnableLlmConfig(user, { id: `openbao-llm-${index + 1}` });
+};
+
+const gooseMessage = (message) => ({
+  id: message.id ?? randomUUID(),
+  role: message.role === 'assistant' ? 'assistant' : 'user',
+  created: Math.floor(Date.now() / 1000),
+  content: [
+    {
+      type: 'text',
+      text: message.content,
+    },
+  ],
+  metadata: {
+    userVisible: message.role !== 'system',
+    agentVisible: true,
+  },
+});
+
+const extractGooseText = (message) =>
+  (message?.content ?? [])
+    .filter((content) => content?.type === 'text' && typeof content.text === 'string')
+    .map((content) => content.text)
+    .join('');
+
+const parseGooseSseAnswer = (text) => {
+  const assistantMessages = [];
+  let errorMessage = '';
+
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith('data:')) {
+      continue;
+    }
+
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(payload);
+      if (event.type === 'Error') {
+        errorMessage = event.error || errorMessage;
+      }
+      if (event.type === 'Message' && event.message?.role === 'assistant') {
+        const content = extractGooseText(event.message);
+        if (content) {
+          assistantMessages.push(content);
+        }
+      }
+    } catch {
+      // Ignore malformed keepalive/event lines from Goose.
+    }
+  }
+
+  if (errorMessage) {
+    throw new Error(errorMessage);
+  }
+
+  return assistantMessages.join('\n').trim();
+};
+
+const callGooseChatEndpoint = async ({ modelAlias }, messages) => {
+  if (!internalGooseUrl) {
+    throw new Error('INTERNAL_GOOSE_URL is not configured.');
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+    ...(gooseSecretKey ? { 'X-Secret-Key': gooseSecretKey } : {}),
+  };
+  const sessionResponse = await fetch(`${internalGooseUrl}/agent/start`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ working_dir: gooseWorkingDir }),
+  });
+  const sessionBody = await jsonResponse(sessionResponse);
+  if (!sessionResponse.ok) {
+    throw new Error(sessionBody.error ?? sessionBody.message ?? `Goose agent start failed with ${sessionResponse.status}`);
+  }
+
+  const sessionId = sessionBody.id;
+  const visibleMessages = messages.filter((message) => message.role !== 'system');
+  const latestUserMessage = [...visibleMessages].reverse().find((message) => message.role === 'user');
+  if (!sessionId || !latestUserMessage) {
+    throw new Error('Goose agent did not return a session or no user message was provided.');
+  }
+
+  const overrideConversation = visibleMessages
+    .filter((message) => message.id !== latestUserMessage.id)
+    .map(gooseMessage);
+  const replyResponse = await fetch(`${internalGooseUrl}/reply`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      session_id: sessionId,
+      user_message: gooseMessage(latestUserMessage),
+      override_conversation: overrideConversation,
+    }),
+  });
+  const replyText = await replyResponse.text();
+  if (!replyResponse.ok) {
+    throw new Error(replyText || `Goose reply failed with ${replyResponse.status}`);
+  }
+
+  const answer = parseGooseSseAnswer(replyText);
+  if (!answer) {
+    throw new Error(`Goose returned an empty response for ${modelAlias}.`);
+  }
+
+  return { answer, sessionId };
+};
 
 const toLlmConfig = async (user, index) => {
   const path = secretPath(user, index);
@@ -1135,8 +1295,9 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
       })),
     });
 
-    await Promise.all(
-      configs.slice(0, llmEndpointCount).map(async (config, index) => {
+    const preparedConfigs = await Promise.all(
+      Array.from({ length: llmEndpointCount }, async (_unused, index) => {
+        const config = configs[index] ?? {};
         const path = secretPath(request.user, index);
         const existingSecret = await secretStoreRead(path);
         const existingData = existingSecret?.data?.data ?? {};
@@ -1156,14 +1317,74 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
         } else if (!existingData.encryptedToken && existingData.token) {
           encryptedTokenFields = encryptProviderToken(existingData.token, providerTokenAad(path));
         }
-        const hasProviderKey = Boolean(encryptedTokenFields.encryptedToken);
-
         if (endpoint) {
           await validateLlmEndpoint(endpoint);
         }
 
-        await secretStoreWrite(path, {
+        const isDisabled = !endpoint && !model && !config.token;
+        if (isDisabled) {
+          encryptedTokenFields = {
+            encryptedToken: undefined,
+            iv: undefined,
+            authTag: undefined,
+            keyVersion: undefined,
+            tokenFingerprint: undefined,
+          };
+        }
+
+        const hasProviderKey = Boolean(encryptedTokenFields.encryptedToken);
+        const hasAnyField = Boolean(endpoint || model || hasProviderKey);
+        const isComplete = Boolean(endpoint && model && hasProviderKey);
+
+        if (hasAnyField && !isComplete) {
+          throw Object.assign(
+            new Error(`${systemLlmName(index)} must include a provider base URL, provider model, and provider API key before it can be saved.`),
+            { status: 400 },
+          );
+        }
+
+        return {
+          index,
+          path,
           id: config.id ?? `secret-llm-${index + 1}`,
+          endpoint,
+          model,
+          modelAlias,
+          encryptedTokenFields,
+          hasProviderKey,
+          isDisabled,
+          isComplete,
+        };
+      }),
+    );
+
+    if (!preparedConfigs.some((config) => config.isComplete)) {
+      throw Object.assign(
+        new Error('Configure at least one complete LiteLLM endpoint: LLM_A, LLM_B, or LLM_C.'),
+        { status: 400 },
+      );
+    }
+
+    await Promise.all(
+      preparedConfigs.map(async ({ index, path, id, endpoint, model, modelAlias, encryptedTokenFields, hasProviderKey, isDisabled }) => {
+        if (isDisabled) {
+          await Promise.all([
+            secretStoreDeleteMetadata(path).catch((error) => {
+              if (error?.status !== 404) {
+                throw error;
+              }
+            }),
+            secretStoreDeleteMetadata(aliasPath(modelAlias)).catch((error) => {
+              if (error?.status !== 404) {
+                throw error;
+              }
+            }),
+          ]);
+          return;
+        }
+
+        await secretStoreWrite(path, {
+          id,
           name: systemLlmName(index),
           endpoint,
           model,
@@ -1201,7 +1422,7 @@ app.post('/api/llm-config', requireAuth, async (request, response, next) => {
       outcome: 'success',
       metadata: {
         count: savedConfigs.length,
-        tiers: savedConfigs.map((config) => config.tier),
+        endpoints: savedConfigs.map((config) => config.name),
         states: savedConfigs.map((config) => config.secretLeaseStatus ?? 'unknown'),
       },
     });
@@ -1227,12 +1448,81 @@ app.post('/api/llm-config/test', requireAuth, async (request, response, next) =>
       resourceType: 'llm_config',
       resourceId: llmConfig.modelAlias,
       outcome: 'success',
-      metadata: { tier: llmConfig.tier, index: llmConfig.index + 1 },
+      metadata: { endpoint: llmConfig.name, index: llmConfig.index + 1 },
     });
     response.json({
       status: 'success',
       message: `Connection test succeeded for ${llmConfig.name}.`,
       lastTestedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/goose/chat', requireAuth, async (request, response, next) => {
+  try {
+    const messages = sanitizeGooseMessages(request.body?.messages);
+    const requestedTier = request.body?.tier;
+    const systemPrompt = String(request.body?.systemPrompt ?? gooseChatbotSystemPrompt).trim();
+    const chatMessages = systemPrompt
+      ? [{ role: 'system', content: systemPrompt }, ...messages.filter((message) => message.role !== 'system')]
+      : messages;
+    const maxTokens = Number.isFinite(gooseChatbotMaxTokens) && gooseChatbotMaxTokens > 0 ? gooseChatbotMaxTokens : 768;
+    const temperature = Number.isFinite(gooseChatbotTemperature) ? gooseChatbotTemperature : 0.2;
+    let answer = '';
+    let gooseSessionId;
+    let backend = 'litellm';
+    let activeConfig;
+    if (gooseChatbotBackend === 'goose') {
+      try {
+        activeConfig = await loadGooseChatbotConfig(request.user);
+        const gooseReply = await callGooseChatEndpoint(activeConfig, chatMessages);
+        answer = gooseReply.answer;
+        gooseSessionId = gooseReply.sessionId;
+        backend = 'goose';
+      } catch (error) {
+        log('Goose chatbot backend failed; falling back to LiteLLM', {
+          error: error instanceof Error ? error.message : 'Unknown Goose error.',
+        });
+      }
+    }
+    if (!answer) {
+      activeConfig = await loadGooseChatbotConfig(request.user, requestedTier);
+      const body = await callLlmChatEndpoint(activeConfig, chatMessages, { maxTokens, temperature });
+      answer = extractLlmAnswer(body);
+    }
+    log('POST /api/goose/chat', {
+      backend,
+      modelAlias: activeConfig.modelAlias,
+      endpoint: activeConfig.name,
+      messageCount: chatMessages.length,
+      userMessageCount: chatMessages.filter((message) => message.role === 'user').length,
+    });
+    logAuditEvent({
+      event: 'goose_chatbot.message',
+      actor: userSubject(request),
+      action: 'chat',
+      resourceType: 'goose_chatbot',
+      resourceId: activeConfig.modelAlias,
+      outcome: 'success',
+      metadata: {
+        backend,
+        endpoint: activeConfig.name,
+        messageCount: chatMessages.length,
+        userMessageCount: chatMessages.filter((message) => message.role === 'user').length,
+      },
+    });
+    response.json({
+      message: {
+        id: randomUUID(),
+        role: 'assistant',
+        content: answer,
+        createdAt: new Date().toISOString(),
+      },
+      modelAlias: activeConfig.modelAlias,
+      tier: activeConfig.tier,
+      gooseSessionId,
     });
   } catch (error) {
     next(error);
@@ -1262,7 +1552,7 @@ app.post('/api/llm-config/chat', requireAuth, async (request, response, next) =>
       resourceType: 'llm_config',
       resourceId: llmConfig.modelAlias,
       outcome: 'success',
-      metadata: { tier: llmConfig.tier, index: llmConfig.index + 1, questionLength: question.length },
+      metadata: { endpoint: llmConfig.name, index: llmConfig.index + 1, questionLength: question.length },
     });
     response.json({
       answer: extractLlmAnswer(body),

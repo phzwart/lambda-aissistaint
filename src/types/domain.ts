@@ -1,4 +1,4 @@
-export type LlmTier = 'high' | 'medium' | 'low';
+export type LlmTier = 'a' | 'b' | 'c';
 
 export type ConnectionStatus = 'idle' | 'testing' | 'success' | 'error';
 
@@ -53,6 +53,20 @@ export interface QaAnswer {
   question: string;
   answer: string;
   createdAt: string;
+}
+
+export interface GooseChatMessage {
+  id: string;
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+export interface GooseChatResponse {
+  message: GooseChatMessage;
+  modelAlias: string;
+  tier: LlmTier;
+  gooseSessionId?: string;
 }
 
 export interface Project {

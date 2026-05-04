@@ -38,6 +38,8 @@ const brokerPort = Number.parseInt(process.env.LITELLM_ADMIN_BROKER_PORT ?? '878
 const brokerToken = process.env.LITELLM_ADMIN_BROKER_TOKEN ?? '';
 const liteLlmUrl = (process.env.INTERNAL_LITELLM_URL ?? 'http://127.0.0.1:4000').replace(/\/+$/g, '');
 const liteLlmAdminKey = process.env.LITELLM_ADMIN_KEY ?? process.env.LITELLM_MASTER_KEY ?? '';
+const liteLlmSecretBrokerUrl = (process.env.LITELLM_SECRET_BROKER_URL ?? 'http://127.0.0.1:8787').replace(/\/+$/g, '');
+const liteLlmSecretBrokerToken = process.env.LITELLM_SECRET_BROKER_TOKEN ?? '';
 const allowedLlmHosts = parseAllowedHosts(process.env.LLM_ALLOWED_HOSTS ?? 'api.cborg.lbl.gov');
 const allowAnyLlmHosts = process.env.LLM_ALLOW_ANY_HOSTS === 'true';
 const explicitLlmDevMode = process.env.LLM_DEV_MODE === 'true';
@@ -81,6 +83,28 @@ const jsonResponse = async (response) => {
   } catch {
     return { raw: text };
   }
+};
+
+const toLiteLlmProviderModel = (model) => {
+  const trimmed = String(model ?? '').trim();
+  return trimmed.includes('/') ? trimmed : `openai/${trimmed}`;
+};
+
+const resolveProviderApiKey = async (modelAlias) => {
+  if (!liteLlmSecretBrokerToken) {
+    throw new Error('LITELLM_SECRET_BROKER_TOKEN must be configured for provider key resolution.');
+  }
+
+  const response = await fetch(`${liteLlmSecretBrokerUrl}/internal/litellm/secrets/${encodeURIComponent(modelAlias)}`, {
+    headers: {
+      Authorization: `Bearer ${liteLlmSecretBrokerToken}`,
+    },
+  });
+  const body = await jsonResponse(response);
+  if (!response.ok || !body.value) {
+    throw new Error(body.error ?? `Provider key lookup failed with ${response.status}.`);
+  }
+  return body.value;
 };
 
 const requireBrokerAuth = (request, response, next) => {
@@ -149,6 +173,7 @@ app.post('/internal/litellm/models', requireBrokerAuth, async (request, response
     }
 
     await validateLlmEndpoint(endpoint);
+    const providerApiKey = await resolveProviderApiKey(modelAlias);
 
     const litellmResponse = await fetch(`${liteLlmUrl}/model/new`, {
       method: 'POST',
@@ -160,9 +185,9 @@ app.post('/internal/litellm/models', requireBrokerAuth, async (request, response
       body: JSON.stringify({
         model_name: modelAlias,
         litellm_params: {
-          model,
+          model: toLiteLlmProviderModel(model),
           api_base: endpoint,
-          api_key: secretReference,
+          api_key: providerApiKey,
         },
       }),
     });

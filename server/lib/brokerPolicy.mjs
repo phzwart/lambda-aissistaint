@@ -1,4 +1,4 @@
-export const allowedLiteLlmAliasPattern = /^aissistaint-[a-z0-9_-]{1,48}-(high|medium|low)$/;
+export const allowedLiteLlmAliasPattern = /^LLM_[ABC]$/;
 
 export const isAllowedLiteLlmAlias = (modelAlias) => allowedLiteLlmAliasPattern.test(String(modelAlias ?? ''));
 

@@ -8,6 +8,8 @@ flowchart TD
   caddy["Caddy TLS Gateway"]
   ui["Vite React UI"]
   api["Node API\nserver/index.mjs"]
+  gooseRoute["Goose Chat Route\n/api/goose/chat"]
+  gooseSvc["Goose Headless Server\n${STACK_NAME}-goose"]
   adminBroker["LiteLLM Admin Broker\nserver/litellm-admin-broker.mjs"]
   secretBroker["LiteLLM Secret Broker\n/internal/litellm/secrets/:modelAlias"]
   keycloak["Keycloak\nOIDC, roles, groups"]
@@ -25,7 +27,9 @@ flowchart TD
   user -->|"HTTPS app access"| caddy
   caddy -->|"UI requests"| ui
   ui -->|"Bearer token API calls"| api
+  ui -->|"typed chatbot messages"| gooseRoute
   ui -->|"OIDC login redirect"| keycloak
+  gooseRoute -->|"authenticated backend route"| api
   keycloak -->|"stores realm state"| keycloakDb
 
   api -->|"verify issuer, azp, aud"| keycloak
@@ -39,12 +43,15 @@ flowchart TD
   secretBroker -->|"read and decrypt provider key"| openbao
   litellm -->|"chat completions via configured alias"| provider
   api -->|"runtime chat/test requests"| litellm
+  api -->|"headless chatbot proxy"| gooseSvc
+  gooseSvc -->|"OpenAI-compatible provider via LiteLLM"| litellm
 
   bootstrap -->|"creates and configures"| caddy
   bootstrap -->|"creates and configures"| keycloak
   bootstrap -->|"creates and configures"| openbao
   bootstrap -->|"creates and configures"| minio
   bootstrap -->|"creates and configures"| litellm
+  bootstrap -->|"creates and configures"| gooseSvc
   bootstrap -->|"writes"| runtimeEnv
   bootstrap -->|"writes"| secretFiles
 
@@ -61,7 +68,7 @@ flowchart TD
   classDef security fill:#dbeafe,stroke:#2563eb,color:#102040
 
   class user,ui ui
-  class caddy,api,keycloakDb,appDb,minio,litellm,provider,runtimeEnv,bootstrap permanent
+  class caddy,api,keycloakDb,appDb,minio,litellm,gooseSvc,provider,runtimeEnv,bootstrap permanent
   class keycloak,openbao,adminBroker,secretBroker,secretFiles,adminHelper security
 ```
 
@@ -74,6 +81,7 @@ Color guide:
 ## Key Interaction Notes
 
 - Browser-to-API calls use Keycloak bearer tokens; the API verifies issuer and client audience/azp before processing protected routes.
+- The headless Goose chatbot accepts bounded message history through the authenticated API, prefers the managed Goose server, falls back to direct LiteLLM when Goose is unavailable, and audits metadata without prompt or response bodies.
 - Provider API keys are write-only from the UI perspective. The API encrypts them and stores encrypted records in OpenBao.
 - The API does not hold the LiteLLM admin key directly. It asks the LiteLLM admin broker to configure model aliases with a dedicated broker token.
 - LiteLLM receives `aissistaint://` secret references. It resolves them through the API secret broker, which validates aliases and decrypts provider keys from OpenBao.
