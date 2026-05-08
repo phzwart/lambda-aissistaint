@@ -1,0 +1,22 @@
+FROM docker.io/library/python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PQA_HOME=/workspace/.pqa
+
+RUN groupadd --system runner \
+    && useradd --system --gid runner --home-dir /workspace --create-home runner
+
+WORKDIR /workspace
+
+COPY cli /tmp/paper-reader-summary-cli
+RUN python -m pip install --upgrade pip \
+    && python -m pip install /tmp/paper-reader-summary-cli \
+    && rm -rf /tmp/paper-reader-summary-cli
+
+RUN mkdir -p /workspace/input /workspace/output /workspace/.pqa \
+    && chown -R runner:runner /workspace
+
+USER runner
+
+ENTRYPOINT ["paper-reader-summary"]

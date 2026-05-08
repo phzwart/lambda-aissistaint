@@ -1,0 +1,7 @@
+{
+  "name": "AIssistAInt Agent Repository",
+  "version": "0.1.0",
+  "description": "Package-provided agent skill templates and future predefined skills for AIssistAInt.",
+  "skillsPath": "skills",
+  "templatesPath": "templates"
+}

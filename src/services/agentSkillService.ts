@@ -1,5 +1,5 @@
 import { appConfig } from '../config/env';
-import type { AgentExecutorCatalogItem, AgentSkill, ProjectAgentSkillBinding } from '../types/domain';
+import type { AgentExecutorCatalogItem, AgentRepository, AgentSkill, ProjectAgentSkillBinding } from '../types/domain';
 import { apiRequest } from './apiClient';
 import { mockDelay } from './mockDelay';
 
@@ -45,8 +45,12 @@ export const createEmptyAgentSkill = (): AgentSkill => {
   return {
     id: crypto.randomUUID(),
     name: '',
+    description: '',
     category: 'General',
     status: 'draft',
+    source: 'user',
+    editable: true,
+    capabilities: [],
     purpose: '',
     whenToUse: '',
     inputs: [],
@@ -76,6 +80,62 @@ const mockExecutors: AgentExecutorCatalogItem[] = [
   },
 ];
 
+const mockRepositories: AgentRepository[] = [
+  {
+    name: 'AIssistAInt Agent Repository',
+    version: '0.1.0',
+    description: 'Package-provided agent skill templates and future predefined skills for AIssistAInt.',
+    directory: 'agent-repo',
+    skillsPath: 'skills',
+    templatesPath: 'templates',
+    skillCount: 1,
+  },
+];
+
+const createMockRepositorySkills = (): AgentSkill[] => [
+  {
+    id: 'package-repository-sample',
+    name: 'Repository Sample Skill',
+    description: 'A read-only sample that demonstrates repository-loaded skills in mock mode.',
+    category: 'General',
+    status: 'enabled',
+    source: 'package',
+    editable: false,
+    origin: {
+      repoName: 'AIssistAInt Agent Repository',
+      directory: 'agent-repo/skills/repository-sample',
+      version: '0.1.0',
+    },
+    capabilities: ['sample', 'repository'],
+    purpose: 'Demonstrate a read-only repository skill in mock mode.',
+    whenToUse: 'Use when verifying that repository skills appear alongside user-created skills.',
+    inputs: [],
+    procedure: 'Review this sample as a repository skill. Duplicate it to customize the instructions.',
+    expectedOutput: 'A duplicated editable user skill when customization is needed.',
+    safetyConstraints: 'Do not store secrets in repository skill files.',
+    requiredTools: [],
+    executable: defaultAgentSkillExecutable(),
+    skillPackage: {
+      directoryName: 'repository-sample',
+      skillMd: `---
+name: repository-sample
+description: "A read-only sample that demonstrates repository-loaded skills in mock mode."
+disable-model-invocation: true
+---
+
+# Repository Sample Skill
+
+## Purpose
+
+Demonstrate a read-only repository skill in mock mode.
+`,
+      files: [],
+    },
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  },
+];
+
 export const agentSkillService = {
   async list(projectId?: string): Promise<{ skills: AgentSkill[]; bindings: ProjectAgentSkillBinding[] }> {
     if (useApi()) {
@@ -84,8 +144,16 @@ export const agentSkillService = {
     }
 
     await mockDelay(150);
+    const repositorySkills = createMockRepositorySkills();
+    const userSkills = readMockSkills().map((skill) => ({
+      capabilities: [],
+      description: '',
+      ...skill,
+      source: 'user' as const,
+      editable: true,
+    }));
     return {
-      skills: readMockSkills(),
+      skills: [...repositorySkills, ...userSkills],
       bindings: projectId ? readMockBindings()[projectId] ?? [] : [],
     };
   },
@@ -103,6 +171,8 @@ export const agentSkillService = {
     const now = new Date().toISOString();
     const saved = {
       ...skill,
+      source: 'user' as const,
+      editable: true,
       updatedAt: now,
       createdAt: skill.createdAt || now,
     };
@@ -137,6 +207,15 @@ export const agentSkillService = {
 
     await mockDelay(100);
     return mockExecutors;
+  },
+
+  async listRepositories(): Promise<{ repos: AgentRepository[]; warnings: { directory: string; message: string }[] }> {
+    if (useApi()) {
+      return apiRequest<{ repos: AgentRepository[]; warnings: { directory: string; message: string }[] }>('/api/agent-repos');
+    }
+
+    await mockDelay(100);
+    return { repos: mockRepositories, warnings: [] };
   },
 
   async saveProjectBindings(projectId: string, bindings: ProjectAgentSkillBinding[]): Promise<ProjectAgentSkillBinding[]> {

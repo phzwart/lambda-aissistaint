@@ -9,13 +9,22 @@ import cors from 'cors';
 import express from 'express';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import pg from 'pg';
+import { configuredAgentRepoDirectories, loadAgentRepoCatalog } from './lib/agentRepo.mjs';
 import { actorFromPayload, logAuditEvent } from './lib/auditEvents.mjs';
 import { isAllowedLiteLlmAlias } from './lib/brokerPolicy.mjs';
 import { createLlmEndpointValidator, parseAllowedHosts } from './lib/llmEndpointPolicy.mjs';
+import {
+  plannerSkillDirectoryName,
+  renderPlannerSkillCatalog,
+  renderPlannerSkillMarkdown,
+  resolvePlannerVisibleSkills,
+  validatePlannerExecutionPayload,
+} from './lib/plannerSkillCatalog.mjs';
+import { configuredPlannerRepoDirectories, loadPlannerSpecCatalog } from './lib/plannerRepo.mjs';
 
 const loadEnvFile = (path, { allowEmpty = true } = {}) => {
   if (!path || !existsSync(path)) {
@@ -93,10 +102,13 @@ const liteLlmAdminBrokerUrl = (process.env.LITELLM_ADMIN_BROKER_URL ?? 'http://1
 const liteLlmAdminBrokerToken = process.env.LITELLM_ADMIN_BROKER_TOKEN ?? '';
 const liteLlmSecretBrokerToken = process.env.LITELLM_SECRET_BROKER_TOKEN ?? '';
 const secretEncryptionKeyVersion = process.env.SECRET_ENCRYPTION_KEY_VERSION ?? 'v1';
+const agentRepoDirectories = configuredAgentRepoDirectories(process.env.AGENT_REPO_DIRECTORIES);
+const plannerRepoDirectories = configuredPlannerRepoDirectories(process.env.PLANNER_REPO_DIRECTORIES, process.env.AGENT_REPO_DIRECTORIES);
 const gooseChatbotBackend = (process.env.GOOSE_CHATBOT_BACKEND ?? 'litellm').toLowerCase();
 const internalGooseUrl = (process.env.INTERNAL_GOOSE_URL ?? '').replace(/\/+$/g, '');
 const gooseSecretKey = process.env.GOOSE_SECRET_KEY ?? '';
 const gooseWorkingDir = process.env.GOOSE_WORKING_DIR ?? '/workspace';
+const gooseWorkspaceHostDir = resolve(process.env.GOOSE_WORKSPACE_DIR || `${defaultPlatformDir}/goose/workspace`);
 const gooseChatbotDefaultTier = (process.env.GOOSE_CHATBOT_DEFAULT_TIER ?? 'a').toLowerCase();
 const gooseChatbotMaxMessages = Number.parseInt(process.env.GOOSE_CHATBOT_MAX_MESSAGES ?? '24', 10);
 const gooseChatbotMaxTokens = Number.parseInt(process.env.GOOSE_CHATBOT_MAX_TOKENS ?? '768', 10);
@@ -640,6 +652,9 @@ const agentSkillIndexPath = (user) => `${agentSkillRootPath(user)}/skills/index`
 const agentSkillPath = (user, skillId) => `${agentSkillRootPath(user)}/skills/${encodeURIComponent(skillId)}`;
 const agentProjectSkillBindingsPath = (user, projectId) =>
   `${agentSkillRootPath(user)}/projects/${encodeURIComponent(projectId)}/skills`;
+const plannerRootPath = (user) => `${openBaoPrefix}/users/${secretUserSegment(user)}/planner`;
+const plannerDefaultPath = (user) => `${plannerRootPath(user)}/default`;
+const plannerProjectPath = (user, projectId) => `${plannerRootPath(user)}/projects/${encodeURIComponent(projectId)}`;
 const providerTokenAad = (path) => `${secretStoreProvider}:${path}:provider-token`;
 const dataApiPath = (user, index) => `/v1/${openBaoKvMount}/data/${secretPath(user, index)}`;
 const metadataApiPath = (user, index) => `/v1/${openBaoKvMount}/metadata/${secretPath(user, index)}`;
@@ -673,6 +688,18 @@ const defaultAgentExecutorCatalog = [
     network: 'none',
     envAllowlist: [],
   },
+  {
+    id: 'paperqa2-paper-reader',
+    name: 'PaperQA2 Paper Reader',
+    description: 'Runs the one-paper PaperQA2 summary workflow in a constrained Podman container.',
+    image: process.env.PAPERQA2_RUNNER_IMAGE ?? 'localhost/aissistaint/paperqa2-paper-reader:latest',
+    command: 'paper-reader-summary',
+    args: [],
+    workingDir: '/workspace',
+    timeoutSeconds: 900,
+    network: 'egress',
+    envAllowlist: ['PAPERQA_LITELLM_URL', 'PAPERQA_LITELLM_API_KEY'],
+  },
 ];
 
 const parseAgentExecutorCatalog = () => {
@@ -691,6 +718,19 @@ const parseAgentExecutorCatalog = () => {
 };
 
 const agentExecutorCatalog = parseAgentExecutorCatalog();
+
+const loadAgentRepositories = () =>
+  loadAgentRepoCatalog({
+    directories: agentRepoDirectories,
+    executorCatalog: agentExecutorCatalog,
+    logger: console,
+  });
+
+const loadPlannerRepositories = () =>
+  loadPlannerSpecCatalog({
+    directories: plannerRepoDirectories,
+    logger: console,
+  });
 
 const agentSkillIdPattern = /^[A-Za-z0-9_-]{1,80}$/;
 const allowedCustomExecutorRegistries = (process.env.AGENT_EXECUTOR_ALLOWED_REGISTRIES ?? 'ghcr.io,docker.io,quay.io')
@@ -891,8 +931,13 @@ const normalizeAgentSkill = (input = {}, existing = {}) => {
   const skill = {
     id,
     name: trimBounded(input.name, 'Skill name', 120, { required: status === 'enabled' }),
+    description: trimBounded(input.description, 'Skill description', 1024),
     category: trimBounded(input.category || 'General', 'Category', 80),
     status,
+    source: 'user',
+    editable: true,
+    origin: input.origin && input.source === 'package' ? undefined : input.origin,
+    capabilities: splitLines(input.capabilities).slice(0, 30),
     purpose: trimBounded(input.purpose, 'Purpose', 2000, { required: status === 'enabled' }),
     whenToUse: trimBounded(input.whenToUse, 'When to use', 2000, { required: status === 'enabled' }),
     inputs: splitLines(input.inputs).slice(0, 30),
@@ -936,7 +981,15 @@ const readAgentSkills = async (user) => {
       return secret?.data?.data ?? null;
     }),
   );
-  return skills.filter(Boolean);
+  return skills.filter(Boolean).map((skill) => ({
+    source: 'user',
+    editable: true,
+    capabilities: [],
+    description: '',
+    ...skill,
+    source: 'user',
+    editable: true,
+  }));
 };
 
 const normalizeProjectSkillBindings = (bindings, skills) => {
@@ -958,6 +1011,265 @@ const readProjectAgentSkillBindings = async (user, projectId, skills) => {
   }
   const secret = await secretStoreRead(agentProjectSkillBindingsPath(user, projectId));
   return normalizeProjectSkillBindings(secret?.data?.data?.bindings ?? [], skills);
+};
+
+const plannerModelAliases = () =>
+  Array.from({ length: llmEndpointCount }, (_value, index) => ({
+    alias: systemLlmName(index),
+    tier: defaultTier(index),
+    configured: true,
+  }));
+
+const plannerAliasSet = () => new Set(plannerModelAliases().map((model) => model.alias));
+
+const defaultPlannerConfigFromSpec = (spec) => {
+  const aliases = plannerModelAliases();
+  const fallbackAlias = aliases[0]?.alias ?? 'LLM_A';
+  return {
+    specId: spec?.id ?? '',
+    roleBindings: Object.fromEntries((spec?.modelRoles ?? ['planner', 'worker', 'summarizer']).map((role) => [role, fallbackAlias])),
+    contextPolicy: {
+      strategy: spec?.defaultContext?.strategy ?? 'summarize',
+      maxTurns: spec?.defaultContext?.maxTurns ?? 50,
+      subagentMaxTurns: spec?.defaultContext?.subagentMaxTurns ?? 25,
+    },
+    skillPolicy: {
+      visibility: spec?.skillPolicy?.defaultVisibility ?? 'project-enabled',
+      allowedSkillIds: spec?.skillPolicy?.allowedSkillIds ?? [],
+      allowedCategories: spec?.skillPolicy?.allowedCategories ?? [],
+    },
+    workspaceMode: spec?.workspacePolicy?.mode ?? 'project-workspace',
+  };
+};
+
+const mergePlannerConfig = (spec, globalConfig = {}, projectConfig = {}) => ({
+  ...defaultPlannerConfigFromSpec(spec),
+  ...globalConfig,
+  ...projectConfig,
+  roleBindings: {
+    ...defaultPlannerConfigFromSpec(spec).roleBindings,
+    ...(globalConfig.roleBindings ?? {}),
+    ...(projectConfig.roleBindings ?? {}),
+  },
+  contextPolicy: {
+    ...defaultPlannerConfigFromSpec(spec).contextPolicy,
+    ...(globalConfig.contextPolicy ?? {}),
+    ...(projectConfig.contextPolicy ?? {}),
+  },
+  skillPolicy: {
+    ...defaultPlannerConfigFromSpec(spec).skillPolicy,
+    ...(globalConfig.skillPolicy ?? {}),
+    ...(projectConfig.skillPolicy ?? {}),
+  },
+});
+
+const normalizePlannerConfig = (input = {}, specs = []) => {
+  const fallbackSpec = specs[0];
+  const specId = trimBounded(input.specId || fallbackSpec?.id || '', 'Planner spec', 80, { required: true });
+  const spec = specs.find((item) => item.id === specId);
+  if (!spec) {
+    throw Object.assign(new Error('Selected planner spec is not available.'), { status: 400 });
+  }
+
+  const allowedAliases = plannerAliasSet();
+  const base = defaultPlannerConfigFromSpec(spec);
+  const roleBindings = {};
+  for (const role of spec.modelRoles) {
+    const alias = trimBounded(input.roleBindings?.[role] || base.roleBindings[role], `Model binding for ${role}`, 40, { required: true });
+    if (!allowedAliases.has(alias)) {
+      throw Object.assign(new Error(`Model binding for ${role} must use a configured LiteLLM alias.`), { status: 400 });
+    }
+    roleBindings[role] = alias;
+  }
+
+  const strategy = ['summarize', 'truncate', 'clear', 'prompt'].includes(input.contextPolicy?.strategy)
+    ? input.contextPolicy.strategy
+    : base.contextPolicy.strategy;
+  const maxTurns = Math.min(Math.max(Number.parseInt(input.contextPolicy?.maxTurns ?? base.contextPolicy.maxTurns, 10) || 50, 1), 200);
+  const subagentMaxTurns = Math.min(
+    Math.max(Number.parseInt(input.contextPolicy?.subagentMaxTurns ?? base.contextPolicy.subagentMaxTurns, 10) || 25, 1),
+    100,
+  );
+  const visibility = ['all-enabled', 'project-enabled', 'allowlist'].includes(input.skillPolicy?.visibility)
+    ? input.skillPolicy.visibility
+    : base.skillPolicy.visibility;
+
+  return {
+    specId,
+    roleBindings,
+    contextPolicy: { strategy, maxTurns, subagentMaxTurns },
+    skillPolicy: {
+      visibility,
+      allowedSkillIds: splitLines(input.skillPolicy?.allowedSkillIds).slice(0, 100),
+      allowedCategories: splitLines(input.skillPolicy?.allowedCategories).slice(0, 30),
+    },
+    workspaceMode: ['project-workspace', 'goose-workspace', 'read-only'].includes(input.workspaceMode)
+      ? input.workspaceMode
+      : base.workspaceMode,
+    updatedAt: new Date().toISOString(),
+  };
+};
+
+const readPlannerConfigRecord = async (path) => {
+  const secret = await secretStoreRead(path);
+  return secret?.data?.data?.config ?? null;
+};
+
+const readMergedPlannerConfig = async (user, projectId, specs) => {
+  const globalConfig = await readPlannerConfigRecord(plannerDefaultPath(user));
+  const selectedSpecId = projectId
+    ? (await readPlannerConfigRecord(plannerProjectPath(user, projectId)))?.specId || globalConfig?.specId
+    : globalConfig?.specId;
+  const spec = specs.find((item) => item.id === selectedSpecId) ?? specs[0];
+  if (!spec) {
+    return { config: null, globalConfig, projectConfig: null, spec: null };
+  }
+  const projectConfig = projectId ? await readPlannerConfigRecord(plannerProjectPath(user, projectId)) : null;
+  return {
+    config: mergePlannerConfig(spec, globalConfig ?? {}, projectConfig ?? {}),
+    globalConfig,
+    projectConfig,
+    spec,
+  };
+};
+
+const safeProjectWorkspaceName = (projectId) => {
+  const normalized = String(projectId ?? '')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96);
+  if (!normalized) {
+    throw Object.assign(new Error('Project id is required for planner Goose workspace materialization.'), { status: 400 });
+  }
+  return normalized;
+};
+
+const projectGooseWorkspace = (projectId) => {
+  const projectDirectory = safeProjectWorkspaceName(projectId);
+  const hostPath = resolve(gooseWorkspaceHostDir, 'projects', projectDirectory);
+  const relativeHostPath = relative(gooseWorkspaceHostDir, hostPath);
+  if (relativeHostPath.startsWith('..') || relativeHostPath === '') {
+    throw Object.assign(new Error('Resolved Goose project workspace is invalid.'), { status: 500 });
+  }
+  return {
+    hostPath,
+    containerPath: `${gooseWorkingDir.replace(/\/+$/g, '')}/projects/${projectDirectory}`,
+  };
+};
+
+const mergedAgentSkillsForUser = async (user) => {
+  const repoCatalog = loadAgentRepositories();
+  const userSkills = await readAgentSkills(user);
+  const packageSkillIds = new Set(repoCatalog.skills.map((skill) => skill.id));
+  return [...repoCatalog.skills, ...userSkills.filter((skill) => !packageSkillIds.has(skill.id))];
+};
+
+const resolvePlannerSkillCatalog = async ({ user, projectId, plannerConfig }) => {
+  const skills = await mergedAgentSkillsForUser(user);
+  const bindings = await readProjectAgentSkillBindings(user, projectId, skills);
+  return resolvePlannerVisibleSkills({ skills, bindings, plannerConfig });
+};
+
+const materializeGoosePlannerSkillCatalog = async ({ user, projectId, plannerConfig }) => {
+  const workspace = projectGooseWorkspace(projectId);
+  const visibleSkills = await resolvePlannerSkillCatalog({ user, projectId, plannerConfig });
+  const skillsRoot = join(workspace.hostPath, '.agents', 'skills');
+  const catalogRoot = join(workspace.hostPath, '.aissistaint');
+
+  rmSync(skillsRoot, { recursive: true, force: true });
+  mkdirSync(skillsRoot, { recursive: true });
+  mkdirSync(catalogRoot, { recursive: true });
+
+  for (const skill of visibleSkills) {
+    const skillDirectory = join(skillsRoot, plannerSkillDirectoryName(skill.id));
+    mkdirSync(skillDirectory, { recursive: true });
+    writeFileSync(join(skillDirectory, 'SKILL.md'), renderPlannerSkillMarkdown(skill), 'utf8');
+  }
+
+  writeFileSync(
+    join(catalogRoot, 'skill-catalog.json'),
+    `${JSON.stringify(renderPlannerSkillCatalog({ projectId, plannerConfig, skills: visibleSkills }), null, 2)}\n`,
+    'utf8',
+  );
+
+  logAuditEvent({
+    event: 'planner_skill_catalog.materialize',
+    actor: actorFromPayload(user),
+    action: 'materialize',
+    resourceType: 'planner_skill_catalog',
+    resourceId: projectId,
+    outcome: 'success',
+    metadata: { skillCount: visibleSkills.length, visibility: plannerConfig?.skillPolicy?.visibility ?? 'project-enabled' },
+  });
+
+  return { workspace, visibleSkills };
+};
+
+const plannerSystemPromptFromSpec = (spec) => {
+  const systemFile = spec?.files?.find((file) => file.path === 'system.md') ?? spec?.files?.find((file) => file.path?.endsWith('/system.md'));
+  return String(systemFile?.content ?? '').trim();
+};
+
+const loadProjectPlannerContext = async (user, projectId) => {
+  const catalog = loadPlannerRepositories();
+  const merged = await readMergedPlannerConfig(user, projectId, catalog.specs);
+  if (!merged.config || !merged.spec) {
+    throw Object.assign(new Error('No planner spec is available.'), { status: 400 });
+  }
+  const materialized = await materializeGoosePlannerSkillCatalog({
+    user,
+    projectId,
+    plannerConfig: merged.config,
+  });
+  return {
+    ...merged,
+    ...materialized,
+    systemPrompt: plannerSystemPromptFromSpec(merged.spec),
+  };
+};
+
+const testGoosePlannerAdapter = async (spec) => {
+  const restartRequiredKeys = spec?.runtime?.restartRequiredKeys ?? [];
+  const result = {
+    engine: spec?.engine ?? 'goose',
+    reachable: false,
+    restartRequired: restartRequiredKeys.length > 0,
+    restartRequiredKeys,
+    message: '',
+  };
+
+  if (spec?.engine !== 'goose') {
+    return { ...result, reachable: true, restartRequired: false, message: 'No Goose validation is required for this planner engine.' };
+  }
+  if (!internalGooseUrl) {
+    return { ...result, message: 'INTERNAL_GOOSE_URL is not configured.' };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    const health = await fetch(`${internalGooseUrl}/agent/start`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(gooseSecretKey ? { 'X-Secret-Key': gooseSecretKey } : {}),
+      },
+      body: JSON.stringify({ working_dir: gooseWorkingDir }),
+      signal: controller.signal,
+    });
+    return {
+      ...result,
+      reachable: health.ok,
+      message: health.ok ? 'Goose accepted a session start request.' : `Goose responded with ${health.status}.`,
+    };
+  } catch (error) {
+    return {
+      ...result,
+      message: error instanceof Error ? error.message : 'Failed to reach Goose.',
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 const chatCompletionsUrl = (baseUrl) => {
@@ -1214,7 +1526,7 @@ const parseGooseSseAnswer = (text) => {
   return assistantMessages.join('\n').trim();
 };
 
-const callGooseChatEndpoint = async ({ modelAlias }, messages) => {
+const callGooseChatEndpoint = async ({ modelAlias }, messages, { workingDir = gooseWorkingDir } = {}) => {
   if (!internalGooseUrl) {
     throw new Error('INTERNAL_GOOSE_URL is not configured.');
   }
@@ -1227,7 +1539,7 @@ const callGooseChatEndpoint = async ({ modelAlias }, messages) => {
   const sessionResponse = await fetch(`${internalGooseUrl}/agent/start`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ working_dir: gooseWorkingDir }),
+    body: JSON.stringify({ working_dir: workingDir }),
   });
   const sessionBody = await jsonResponse(sessionResponse);
   if (!sessionResponse.ok) {
@@ -1235,6 +1547,11 @@ const callGooseChatEndpoint = async ({ modelAlias }, messages) => {
   }
 
   const sessionId = sessionBody.id;
+  const systemContext = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => message.content)
+    .filter(Boolean)
+    .join('\n\n');
   const visibleMessages = messages.filter((message) => message.role !== 'system');
   const latestUserMessage = [...visibleMessages].reverse().find((message) => message.role === 'user');
   if (!sessionId || !latestUserMessage) {
@@ -1249,7 +1566,14 @@ const callGooseChatEndpoint = async ({ modelAlias }, messages) => {
     headers,
     body: JSON.stringify({
       session_id: sessionId,
-      user_message: gooseMessage(latestUserMessage),
+      user_message: gooseMessage(
+        systemContext
+          ? {
+              ...latestUserMessage,
+              content: `${systemContext}\n\nUser request:\n${latestUserMessage.content}`,
+            }
+          : latestUserMessage,
+      ),
       override_conversation: overrideConversation,
     }),
   });
@@ -1604,15 +1928,147 @@ app.get('/api/agent-executors', requireAuth, (request, response) => {
   response.json({ executors: agentExecutorCatalog });
 });
 
+app.get('/api/agent-repos', requireAuth, (_request, response) => {
+  const catalog = loadAgentRepositories();
+  logAuditEvent({
+    event: 'agent_repo.read',
+    actor: userSubject(_request),
+    action: 'read',
+    resourceType: 'agent_repo',
+    outcome: 'success',
+    metadata: { repoCount: catalog.repos.length, skillCount: catalog.skills.length, warningCount: catalog.warnings.length },
+  });
+  response.json({ repos: catalog.repos, warnings: catalog.warnings });
+});
+
+app.get('/api/planner-specs', requireAuth, (request, response) => {
+  const catalog = loadPlannerRepositories();
+  logAuditEvent({
+    event: 'planner_spec.read',
+    actor: userSubject(request),
+    action: 'read',
+    resourceType: 'planner_spec',
+    outcome: 'success',
+    metadata: { specCount: catalog.specs.length, warningCount: catalog.warnings.length },
+  });
+  response.json({ specs: catalog.specs, warnings: catalog.warnings });
+});
+
+app.get('/api/planner-config', requireAuth, async (request, response, next) => {
+  try {
+    const projectId = String(request.query.projectId ?? '').trim();
+    const catalog = loadPlannerRepositories();
+    const merged = await readMergedPlannerConfig(request.user, projectId, catalog.specs);
+    response.json({
+      config: merged.config,
+      globalConfig: merged.globalConfig,
+      projectConfig: merged.projectConfig,
+      spec: merged.spec,
+      modelAliases: plannerModelAliases(),
+      warnings: catalog.warnings,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put('/api/planner-config/default', requireAuth, async (request, response, next) => {
+  try {
+    const catalog = loadPlannerRepositories();
+    const config = normalizePlannerConfig(request.body?.config ?? request.body, catalog.specs);
+    await secretStoreWrite(plannerDefaultPath(request.user), { config, updatedAt: new Date().toISOString() });
+    logAuditEvent({
+      event: 'planner_config.save',
+      actor: userSubject(request),
+      action: 'save',
+      resourceType: 'planner_config',
+      resourceId: 'default',
+      outcome: 'success',
+      metadata: { specId: config.specId },
+    });
+    response.json({ config });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put('/api/projects/:id/planner-config', requireAuth, async (request, response, next) => {
+  try {
+    const projectId = request.params.id;
+    const db = await requireProjectDb();
+    const client = await db.connect();
+    try {
+      await requireProjectRole(client, projectId, request, ['owner', 'editor']);
+    } finally {
+      client.release();
+    }
+
+    const catalog = loadPlannerRepositories();
+    const config = normalizePlannerConfig(request.body?.config ?? request.body, catalog.specs);
+    await secretStoreWrite(plannerProjectPath(request.user, projectId), { projectId, config, updatedAt: new Date().toISOString() });
+    logAuditEvent({
+      event: 'planner_config.save',
+      actor: userSubject(request),
+      action: 'save',
+      resourceType: 'planner_config',
+      resourceId: projectId,
+      outcome: 'success',
+      metadata: { specId: config.specId, projectId },
+    });
+    response.json({ config });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/planner-config/test', requireAuth, async (request, response, next) => {
+  try {
+    const catalog = loadPlannerRepositories();
+    const config = normalizePlannerConfig(request.body?.config ?? request.body, catalog.specs);
+    const spec = catalog.specs.find((item) => item.id === config.specId);
+    const adapter = await testGoosePlannerAdapter(spec);
+    logAuditEvent({
+      event: 'planner_config.test',
+      actor: userSubject(request),
+      action: 'test',
+      resourceType: 'planner_config',
+      resourceId: config.specId,
+      outcome: adapter.reachable ? 'success' : 'failure',
+      metadata: { engine: spec?.engine, restartRequired: adapter.restartRequired },
+    });
+    response.json({
+      ok: adapter.reachable,
+      config,
+      adapter,
+      modelAliases: plannerModelAliases(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get('/api/agent-skills', requireAuth, async (request, response, next) => {
   try {
     const projectId = String(request.query.projectId ?? '').trim();
-    const skills = await readAgentSkills(request.user);
+    const repoCatalog = loadAgentRepositories();
+    const userSkills = await readAgentSkills(request.user);
+    const packageSkillIds = new Set(repoCatalog.skills.map((skill) => skill.id));
+    const skills = [...repoCatalog.skills, ...userSkills.filter((skill) => !packageSkillIds.has(skill.id))];
     const bindings = await readProjectAgentSkillBindings(request.user, projectId, skills);
     log('GET /api/agent-skills', {
       count: skills.length,
       projectId: projectId || undefined,
       bindingCount: bindings.length,
+      packageSkillCount: repoCatalog.skills.length,
+      userSkillCount: userSkills.length,
+    });
+    logAuditEvent({
+      event: 'agent_repo.read',
+      actor: userSubject(request),
+      action: 'read',
+      resourceType: 'agent_repo',
+      outcome: 'success',
+      metadata: { repoCount: repoCatalog.repos.length, skillCount: repoCatalog.skills.length, warningCount: repoCatalog.warnings.length },
     });
     response.json({ skills, bindings });
   } catch (error) {
@@ -1623,6 +2079,11 @@ app.get('/api/agent-skills', requireAuth, async (request, response, next) => {
 app.post('/api/agent-skills', requireAuth, async (request, response, next) => {
   try {
     const input = request.body?.skill ?? {};
+    const repoCatalog = loadAgentRepositories();
+    const packageSkillIds = new Set(repoCatalog.skills.map((skill) => skill.id));
+    if (input.source === 'package' || input.editable === false || packageSkillIds.has(String(input.id ?? ''))) {
+      throw Object.assign(new Error('Repository skills are read-only. Duplicate the skill before editing it.'), { status: 400 });
+    }
     const existingSecret = input.id ? await secretStoreRead(agentSkillPath(request.user, String(input.id))) : null;
     const existing = existingSecret?.data?.data ?? {};
     const skill = normalizeAgentSkill(input, existing);
@@ -1650,6 +2111,11 @@ app.delete('/api/agent-skills/:id', requireAuth, async (request, response, next)
     const id = String(request.params.id ?? '');
     if (!agentSkillIdPattern.test(id)) {
       response.status(400).json({ error: 'Skill id contains unsupported characters.' });
+      return;
+    }
+    const repoCatalog = loadAgentRepositories();
+    if (repoCatalog.skills.some((skill) => skill.id === id)) {
+      response.status(400).json({ error: 'Repository skills are read-only and cannot be deleted.' });
       return;
     }
 
@@ -1684,7 +2150,10 @@ app.put('/api/projects/:id/agent-skills', requireAuth, async (request, response,
       client.release();
     }
 
-    const skills = await readAgentSkills(request.user);
+    const repoCatalog = loadAgentRepositories();
+    const userSkills = await readAgentSkills(request.user);
+    const packageSkillIds = new Set(repoCatalog.skills.map((skill) => skill.id));
+    const skills = [...repoCatalog.skills, ...userSkills.filter((skill) => !packageSkillIds.has(skill.id))];
     const bindings = normalizeProjectSkillBindings(request.body?.bindings, skills);
     await secretStoreWrite(agentProjectSkillBindingsPath(request.user, projectId), {
       projectId,
@@ -1905,7 +2374,31 @@ app.post('/api/goose/chat', requireAuth, async (request, response, next) => {
   try {
     const messages = sanitizeGooseMessages(request.body?.messages);
     const requestedTier = request.body?.tier;
-    const systemPrompt = String(request.body?.systemPrompt ?? gooseChatbotSystemPrompt).trim();
+    const projectId = String(request.body?.projectId ?? '').trim();
+    const plannerMode = request.body?.plannerMode === true;
+    let plannerContext = null;
+    if (plannerMode && !projectId) {
+      throw Object.assign(new Error('projectId is required for planner mode.'), { status: 400 });
+    }
+    if (plannerMode && gooseChatbotBackend !== 'goose') {
+      throw Object.assign(new Error('Planner mode requires the Goose backend.'), { status: 400 });
+    }
+    if (plannerMode && projectId) {
+      const db = await requireProjectDb();
+      const client = await db.connect();
+      try {
+        await requireProjectRole(client, projectId, request, ['owner', 'editor', 'viewer']);
+      } finally {
+        client.release();
+      }
+      plannerContext = await loadProjectPlannerContext(request.user, projectId);
+    }
+    const requestedSystemPrompt = String(request.body?.systemPrompt ?? '').trim();
+    const systemPrompt = String(
+      plannerMode
+        ? [gooseChatbotSystemPrompt, plannerContext?.systemPrompt, requestedSystemPrompt].filter(Boolean).join('\n\n')
+        : requestedSystemPrompt || gooseChatbotSystemPrompt,
+    ).trim();
     const chatMessages = systemPrompt
       ? [{ role: 'system', content: systemPrompt }, ...messages.filter((message) => message.role !== 'system')]
       : messages;
@@ -1917,8 +2410,12 @@ app.post('/api/goose/chat', requireAuth, async (request, response, next) => {
     let activeConfig;
     if (gooseChatbotBackend === 'goose') {
       try {
-        activeConfig = await loadGooseChatbotConfig(request.user);
-        const gooseReply = await callGooseChatEndpoint(activeConfig, chatMessages);
+        const plannerAlias = plannerContext?.config?.roleBindings?.planner;
+        const plannerTier = /^LLM_[ABC]$/i.test(plannerAlias ?? '') ? plannerAlias.slice(-1).toLowerCase() : undefined;
+        activeConfig = await loadGooseChatbotConfig(request.user, plannerTier);
+        const gooseReply = await callGooseChatEndpoint(activeConfig, chatMessages, {
+          workingDir: plannerContext?.workspace?.containerPath ?? gooseWorkingDir,
+        });
         answer = gooseReply.answer;
         gooseSessionId = gooseReply.sessionId;
         backend = 'goose';
@@ -1926,6 +2423,9 @@ app.post('/api/goose/chat', requireAuth, async (request, response, next) => {
         log('Goose chatbot backend failed; falling back to LiteLLM', {
           error: error instanceof Error ? error.message : 'Unknown Goose error.',
         });
+        if (plannerMode) {
+          throw error;
+        }
       }
     }
     if (!answer) {
@@ -1933,12 +2433,18 @@ app.post('/api/goose/chat', requireAuth, async (request, response, next) => {
       const body = await callLlmChatEndpoint(activeConfig, chatMessages, { maxTokens, temperature });
       answer = extractLlmAnswer(body);
     }
+    let plannerPayload = null;
+    if (plannerMode) {
+      plannerPayload = validatePlannerExecutionPayload(answer, { visibleSkills: plannerContext?.visibleSkills ?? [] });
+    }
     log('POST /api/goose/chat', {
       backend,
       modelAlias: activeConfig.modelAlias,
       endpoint: activeConfig.name,
       messageCount: chatMessages.length,
       userMessageCount: chatMessages.filter((message) => message.role === 'user').length,
+      plannerMode,
+      projectId: projectId || undefined,
     });
     logAuditEvent({
       event: 'goose_chatbot.message',
@@ -1952,6 +2458,8 @@ app.post('/api/goose/chat', requireAuth, async (request, response, next) => {
         endpoint: activeConfig.name,
         messageCount: chatMessages.length,
         userMessageCount: chatMessages.filter((message) => message.role === 'user').length,
+        plannerMode,
+        projectId: projectId || undefined,
       },
     });
     response.json({
@@ -1964,6 +2472,7 @@ app.post('/api/goose/chat', requireAuth, async (request, response, next) => {
       modelAlias: activeConfig.modelAlias,
       tier: activeConfig.tier,
       gooseSessionId,
+      plannerPayload,
     });
   } catch (error) {
     next(error);

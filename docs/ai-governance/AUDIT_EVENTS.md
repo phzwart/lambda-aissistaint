@@ -44,7 +44,12 @@ AIssistAInt audit events are structured, non-secret operational records. They ar
 | `agent_skill.save` | User creates or updates an agent skill | Full procedure text if it contains sensitive data, executor secrets |
 | `agent_skill.delete` | User deletes an agent skill | Skill body, executor secrets |
 | `agent_skill.enable` | User saves project-level skill enablement | Skill body, project-sensitive notes |
+| `agent_repo.read` | User loads package-provided agent repository metadata and skills | Skill body, local filesystem details beyond configured repo paths |
 | `agent_executor.catalog_read` | User loads approved executor options | Internal registry credentials |
+| `planner_spec.read` | User loads package-provided planner specifications | System prompt body, local filesystem details beyond configured repo paths |
+| `planner_config.save` | User saves global or project planner setup | Provider keys, raw planner prompt bodies |
+| `planner_config.test` | User validates planner setup against model aliases and the planner engine | Provider keys, prompt bodies, Goose secret key |
+| `planner_skill_catalog.materialize` | API writes planner-visible skill stubs/catalog into the Goose project workspace | Skill bodies, generated file contents, local filesystem details beyond counts and project id |
 | `broker.auth_denied` | Broker rejects a bearer token | Presented token |
 
 ## Retention And Review

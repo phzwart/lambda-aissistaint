@@ -1,0 +1,14 @@
+{
+  "id": "template-skill",
+  "name": "Template Skill",
+  "category": "General",
+  "description": "A starting point for creating an AIssistAInt agent skill.",
+  "version": "0.1.0",
+  "status": "draft",
+  "capabilities": ["template"],
+  "entrypoint": "SKILL.md",
+  "executor": {
+    "mode": "none"
+  },
+  "files": ["README.md"]
+}

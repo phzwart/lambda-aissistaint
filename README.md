@@ -110,6 +110,7 @@ Runtime controls:
 - `GOOSE_PROVIDER`
 - `GOOSE_MODEL`
 - `GOOSE_WORKING_DIR`
+- `GOOSE_WORKSPACE_DIR`
 - `GOOSE_CHATBOT_BACKEND`
 - `GOOSE_CHATBOT_DEFAULT_TIER`
 - `GOOSE_CHATBOT_MAX_MESSAGES`
@@ -119,13 +120,27 @@ Runtime controls:
 
 The route audits `goose_chatbot.message` with endpoint and message counts only. Prompt bodies, responses, bearer tokens, and provider keys must stay out of logs.
 
-## Agent Skill Setup
+When `POST /api/goose/chat` is called with `plannerMode: true` and a `projectId`, the API materializes planner-visible skills into the project Goose workspace before starting the Goose session. Generated files are written under `.agents/skills/<skillId>/SKILL.md` and `.aissistaint/skill-catalog.json` inside `/workspace/projects/<projectId>`. Goose sees these as read-only reasoning inputs and must return a JSON execution payload; it must not execute skills. Skill changes do not require a Goose server restart, but the API starts a fresh planner session so discovery runs against the updated project workspace.
 
-The Preferences / Setup page includes an Agent Setup tab for building a reusable, per-user skill library and enabling skills per project. Skills are authored with structured headings such as purpose, when to use, inputs, procedure, expected output, safety constraints, and required tools. Those fields automatically render into a portable skill directory with a Cursor/Anthropic-style `SKILL.md` file containing YAML frontmatter (`name`, `description`, and `disable-model-invocation`) plus the skill instructions.
+## Skill Setup
+
+The Preferences / Setup page includes a Skill Setup tab for building a reusable, per-user skill library and enabling skills per project. Skills are authored with structured headings such as purpose, when to use, inputs, procedure, expected output, safety constraints, and required tools. Those fields automatically render into a portable skill directory with a Cursor/Anthropic-style `SKILL.md` file containing YAML frontmatter (`name`, `description`, and `disable-model-invocation`) plus the skill instructions.
 
 Executable support is declarative in this first pass. A skill can have no executor, use an approved container from the backend catalog, or define a validated custom container with image, command, args, working directory, timeout, network policy, and environment allowlist. The browser never runs executables directly, and skill definitions must not contain raw secrets.
 
-Agent skill records and project enablement are stored through the backend/OpenBao flow under the user's `app-tokens` namespace. Relevant actions emit non-secret audit events (`agent_skill.save`, `agent_skill.delete`, `agent_skill.enable`, and `agent_executor.catalog_read`).
+The package can also provide read-only repository skills from `agent-repo/`. Set `AGENT_REPO_DIRECTORIES` to a comma-separated list of repository directories, or leave it blank to load `./agent-repo` when present. Each repository has a `repo.json` manifest, optional `skills/` entries, and `templates/` users can copy when authoring their own skills. Repository skills can be enabled per project or duplicated into the user's editable library.
+
+The packaged `paper-reader-summary` skill has a buildable PaperQA2 runner image. Build it with `podman_services/build_paperqa2_runner.sh`. At execution time the host supplies the selected LiteLLM aliases as CLI args, for example `--llm-model LLM_A --summary-llm-model LLM_A`, and injects only `PAPERQA_LITELLM_URL` plus a LiteLLM API key into the container.
+
+Agent skill records and project enablement are stored through the backend/OpenBao flow under the user's `app-tokens` namespace. Relevant actions emit non-secret audit events (`agent_skill.save`, `agent_skill.delete`, `agent_skill.enable`, `agent_repo.read`, and `agent_executor.catalog_read`).
+
+## Planner Setup
+
+The Preferences / Setup page also includes a Planner Setup tab. Planner definitions are read-only repository specs under `agent-repo/planners/`, while users save global defaults plus optional per-project overrides. The current packaged spec is `goose-task-planner`, which binds planner roles such as `planner`, `worker`, and `summarizer` to configured LiteLLM aliases like `LLM_A`, `LLM_B`, and `LLM_C`.
+
+Leave `PLANNER_REPO_DIRECTORIES` blank to load planners from `./agent-repo`, or set it to a comma-separated list of repository directories. Goose provider keys are not written to planner specs or UI config; settings that require `GOOSE_PROVIDER`, `GOOSE_MODEL`, or similar env/config changes are reported as restart-required so the running managed Goose service is not silently mutated.
+
+Planner mode applies Skill Setup visibility policy before exposing skills to Goose. The planner output is parsed as JSON and checked against the visible skill catalog before it can be handed to a future execution broker.
 
 ## User Flow
 

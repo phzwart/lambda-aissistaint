@@ -1,0 +1,15 @@
+{
+  "id": "paper-reader-summary",
+  "name": "Paper Reader Summary",
+  "category": "Document Processing",
+  "description": "Use when asked to read or summarize a single paper, PDF, or article and extract its question, methods, data, findings, contributions, limitations, and evidence anchors.",
+  "version": "0.1.0",
+  "status": "enabled",
+  "capabilities": ["paper-reading", "pdf-extraction", "structured-summary", "grounded-summary"],
+  "entrypoint": "SKILL.md",
+  "executor": {
+    "mode": "catalog",
+    "catalogId": "paperqa2-paper-reader"
+  },
+  "files": ["README.md"]
+}

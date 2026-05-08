@@ -1,0 +1,62 @@
+{
+  "id": "goose-task-planner",
+  "name": "Goose Task Planner",
+  "version": "0.1.0",
+  "description": "Use Goose as the planning engine while binding planner roles to configured AIssistAInt LiteLLM aliases.",
+  "engine": "goose",
+  "modelRoles": ["planner", "worker", "summarizer"],
+  "defaultContext": {
+    "strategy": "summarize",
+    "maxTurns": 50,
+    "subagentMaxTurns": 25
+  },
+  "skillPolicy": {
+    "defaultVisibility": "project-enabled",
+    "allowedSkillIds": [],
+    "allowedCategories": []
+  },
+  "workspacePolicy": {
+    "mode": "project-workspace",
+    "readOnly": false,
+    "requiresProject": true
+  },
+  "configFiles": ["system.md"],
+  "runtime": {
+    "requiredEnv": ["INTERNAL_GOOSE_URL", "GOOSE_SECRET_KEY"],
+    "restartRequiredKeys": ["GOOSE_PROVIDER", "GOOSE_MODEL", "GOOSE_PLANNER_PROVIDER", "GOOSE_PLANNER_MODEL"]
+  },
+  "responseSchema": {
+    "type": "skill_execution_plan",
+    "version": "0.1.0",
+    "required": [
+      "type",
+      "version",
+      "projectId",
+      "selectedSkillId",
+      "reasoningSummary",
+      "inputs",
+      "requestedExecutor",
+      "cliPlan",
+      "confidence",
+      "missingInformation"
+    ],
+    "properties": {
+      "type": "skill_execution_plan",
+      "version": "0.1.0",
+      "projectId": "Active AIssistAInt project id.",
+      "selectedSkillId": "Exact id of one visible planner skill.",
+      "reasoningSummary": "Brief non-secret explanation of why this skill applies.",
+      "inputs": "Object of user/project inputs the future broker must resolve.",
+      "requestedExecutor": {
+        "mode": "none | catalog | custom",
+        "catalogId": "Executor catalog id when the selected skill declares one."
+      },
+      "cliPlan": {
+        "command": "Command hint from the skill metadata.",
+        "args": "Array of argument strings with placeholders for broker-resolved values."
+      },
+      "confidence": "low | medium | high",
+      "missingInformation": "Array of missing inputs or unresolved assumptions."
+    }
+  }
+}

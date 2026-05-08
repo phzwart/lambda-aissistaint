@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { appConfig } from '../config/env';
 import { agentSkillService, createEmptyAgentSkill, defaultAgentSkillExecutable } from '../services/agentSkillService';
 import { llmConfigService } from '../services/llmConfigService';
+import { plannerConfigService } from '../services/plannerConfigService';
 import { projectService } from '../services/projectService';
 import { useWorkflowStore } from '../state/workflowStore';
 import type {
@@ -12,6 +13,9 @@ import type {
   ConnectionStatus,
   LlmConfig,
   LlmTier,
+  PlannerConfig,
+  PlannerModelAlias,
+  PlannerSpec,
   Project,
   ProjectAgentSkillBinding,
 } from '../types/domain';
@@ -62,6 +66,27 @@ const createBinding = (skill: AgentSkill, index: number): ProjectAgentSkillBindi
   priority: index + 1,
   notes: '',
 });
+
+const createPlannerConfig = (spec?: PlannerSpec, aliases: PlannerModelAlias[] = []): PlannerConfig => {
+  const fallbackAlias = aliases[0]?.alias ?? 'LLM_A';
+  return {
+    specId: spec?.id ?? '',
+    roleBindings: Object.fromEntries((spec?.modelRoles ?? ['planner', 'worker', 'summarizer']).map((role) => [role, fallbackAlias])),
+    contextPolicy: {
+      strategy: spec?.defaultContext.strategy ?? 'summarize',
+      maxTurns: spec?.defaultContext.maxTurns ?? 50,
+      subagentMaxTurns: spec?.defaultContext.subagentMaxTurns ?? 25,
+    },
+    skillPolicy: {
+      visibility: spec?.skillPolicy.defaultVisibility ?? 'project-enabled',
+      allowedSkillIds: spec?.skillPolicy.allowedSkillIds ?? [],
+      allowedCategories: spec?.skillPolicy.allowedCategories ?? [],
+    },
+    workspaceMode: 'project-workspace',
+  };
+};
+
+const isRepositorySkill = (skill: AgentSkill) => skill.source === 'package' || skill.editable === false;
 
 const slugifySkillName = (value: string, fallback = 'agent-skill') => {
   const slug = (value || fallback)
@@ -137,7 +162,7 @@ interface ActivityLogEntry {
 }
 
 export function PreferencesPage() {
-  const [activeSetupTab, setActiveSetupTab] = useState<'llm' | 'agent' | 'project'>('llm');
+  const [activeSetupTab, setActiveSetupTab] = useState<'llm' | 'agent' | 'planner' | 'project'>('llm');
   const [configs, setConfigs] = useState<LlmConfig[]>([]);
   const [activeConfigId, setActiveConfigId] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -163,6 +188,15 @@ export function PreferencesPage() {
   const [isLoadingAgentSkills, setIsLoadingAgentSkills] = useState(false);
   const [isSavingAgentSkill, setIsSavingAgentSkill] = useState(false);
   const [isSavingSkillBindings, setIsSavingSkillBindings] = useState(false);
+  const [plannerSpecs, setPlannerSpecs] = useState<PlannerSpec[]>([]);
+  const [plannerModelAliases, setPlannerModelAliases] = useState<PlannerModelAlias[]>([]);
+  const [plannerDefaultDraft, setPlannerDefaultDraft] = useState<PlannerConfig>(createPlannerConfig);
+  const [plannerProjectDraft, setPlannerProjectDraft] = useState<PlannerConfig>(createPlannerConfig);
+  const [isLoadingPlanner, setIsLoadingPlanner] = useState(false);
+  const [isSavingPlanner, setIsSavingPlanner] = useState(false);
+  const [plannerValidation, setPlannerValidation] = useState<{ ok: boolean; message: string; restartRequired: boolean; restartRequiredKeys: string[] } | null>(
+    null,
+  );
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: crypto.randomUUID(),
@@ -234,6 +268,23 @@ export function PreferencesPage() {
         setBanner({ severity: 'error', message });
       })
       .finally(() => setIsLoadingAgentSkills(false));
+  }, [activeProject?.id]);
+
+  useEffect(() => {
+    setIsLoadingPlanner(true);
+    void Promise.all([plannerConfigService.listSpecs(), plannerConfigService.getConfig(activeProject?.id)])
+      .then(([specCatalog, configResponse]) => {
+        setPlannerSpecs(specCatalog.specs);
+        setPlannerModelAliases(configResponse.modelAliases);
+        const selectedSpec = configResponse.spec ?? specCatalog.specs[0];
+        setPlannerDefaultDraft(configResponse.globalConfig ?? createPlannerConfig(selectedSpec, configResponse.modelAliases));
+        setPlannerProjectDraft(configResponse.projectConfig ?? configResponse.config ?? createPlannerConfig(selectedSpec, configResponse.modelAliases));
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : 'Failed to load planner setup.';
+        setBanner({ severity: 'error', message });
+      })
+      .finally(() => setIsLoadingPlanner(false));
   }, [activeProject?.id]);
 
   const activeConfig = configs.find((config) => config.id === activeConfigId) ?? configs[0];
@@ -502,6 +553,11 @@ export function PreferencesPage() {
   };
 
   const saveSkill = async () => {
+    if (isRepositorySkill(skillDraft)) {
+      setBanner({ severity: 'error', message: 'Repository skills are read-only. Duplicate the skill before editing it.' });
+      return;
+    }
+
     setIsSavingAgentSkill(true);
     try {
       const saved = await agentSkillService.save(skillDraft);
@@ -526,8 +582,46 @@ export function PreferencesPage() {
     }
   };
 
+  const duplicateSkill = async () => {
+    if (!isRepositorySkill(skillDraft)) {
+      return;
+    }
+
+    setIsSavingAgentSkill(true);
+    try {
+      const now = new Date().toISOString();
+      const copy: AgentSkill = {
+        ...skillDraft,
+        id: crypto.randomUUID(),
+        name: `${skillDraft.name || 'Repository skill'} Copy`,
+        status: 'draft',
+        source: 'user',
+        editable: true,
+        origin: undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const saved = await agentSkillService.save(copy);
+      setAgentSkills((current) => [saved, ...current]);
+      setProjectSkillBindings((current) => [createBinding(saved, current.length), ...current]);
+      selectSkill(saved);
+      setBanner({ severity: 'success', message: `Duplicated "${skillDraft.name || 'repository skill'}" into My Skills.` });
+      addActivity(`Duplicated repository skill "${skillDraft.name || skillDraft.id}".`, 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to duplicate repository skill.';
+      setBanner({ severity: 'error', message });
+      addActivity(message, 'error');
+    } finally {
+      setIsSavingAgentSkill(false);
+    }
+  };
+
   const deleteSkill = async () => {
     if (!skillDraft.id) {
+      return;
+    }
+    if (isRepositorySkill(skillDraft)) {
+      setBanner({ severity: 'error', message: 'Repository skills are read-only and cannot be deleted.' });
       return;
     }
     const confirmed = window.confirm(`Delete skill "${skillDraft.name || skillDraft.id}"?`);
@@ -573,6 +667,9 @@ export function PreferencesPage() {
         ...buildSkillMarkdownPreview(skillDraft),
         files: [],
       };
+  const repositorySkills = agentSkills.filter(isRepositorySkill);
+  const userSkills = agentSkills.filter((skill) => !isRepositorySkill(skill));
+  const activeSkillIsRepositorySkill = isRepositorySkill(skillDraft);
 
   const saveProjectSkillBindings = async () => {
     if (!activeProject) {
@@ -592,6 +689,107 @@ export function PreferencesPage() {
       addActivity(message, 'error');
     } finally {
       setIsSavingSkillBindings(false);
+    }
+  };
+
+  const plannerDefaultSpec = plannerSpecs.find((spec) => spec.id === plannerDefaultDraft.specId) ?? plannerSpecs[0];
+  const plannerProjectSpec = plannerSpecs.find((spec) => spec.id === plannerProjectDraft.specId) ?? plannerDefaultSpec;
+  const enabledSkillIds = projectSkillBindings.filter((binding) => binding.enabled).map((binding) => binding.skillId);
+
+  const updatePlannerDefaultDraft = (patch: Partial<PlannerConfig>) => {
+    setPlannerDefaultDraft((current) => ({ ...current, ...patch }));
+  };
+
+  const updatePlannerProjectDraft = (patch: Partial<PlannerConfig>) => {
+    setPlannerProjectDraft((current) => ({ ...current, ...patch }));
+  };
+
+  const updatePlannerRoleBinding = (scope: 'default' | 'project', role: string, alias: string) => {
+    const update = scope === 'default' ? setPlannerDefaultDraft : setPlannerProjectDraft;
+    update((current) => ({
+      ...current,
+      roleBindings: {
+        ...current.roleBindings,
+        [role]: alias,
+      },
+    }));
+  };
+
+  const updatePlannerContext = (scope: 'default' | 'project', patch: Partial<PlannerConfig['contextPolicy']>) => {
+    const update = scope === 'default' ? setPlannerDefaultDraft : setPlannerProjectDraft;
+    update((current) => ({
+      ...current,
+      contextPolicy: {
+        ...current.contextPolicy,
+        ...patch,
+      },
+    }));
+  };
+
+  const updatePlannerSkillPolicy = (scope: 'default' | 'project', patch: Partial<PlannerConfig['skillPolicy']>) => {
+    const update = scope === 'default' ? setPlannerDefaultDraft : setPlannerProjectDraft;
+    update((current) => ({
+      ...current,
+      skillPolicy: {
+        ...current.skillPolicy,
+        ...patch,
+      },
+    }));
+  };
+
+  const savePlannerDefault = async () => {
+    setIsSavingPlanner(true);
+    try {
+      const saved = await plannerConfigService.saveDefault(plannerDefaultDraft);
+      setPlannerDefaultDraft(saved);
+      setBanner({ severity: 'success', message: 'Planner defaults saved.' });
+      addActivity('Saved global planner defaults.', 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save planner defaults.';
+      setBanner({ severity: 'error', message });
+      addActivity(message, 'error');
+    } finally {
+      setIsSavingPlanner(false);
+    }
+  };
+
+  const savePlannerProject = async () => {
+    if (!activeProject) {
+      setBanner({ severity: 'error', message: 'Choose an active project before saving a planner override.' });
+      return;
+    }
+    setIsSavingPlanner(true);
+    try {
+      const saved = await plannerConfigService.saveProject(activeProject.id, plannerProjectDraft);
+      setPlannerProjectDraft(saved);
+      setBanner({ severity: 'success', message: `Planner override saved for "${activeProject.name}".` });
+      addActivity(`Saved planner override for "${activeProject.name}".`, 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save planner override.';
+      setBanner({ severity: 'error', message });
+      addActivity(message, 'error');
+    } finally {
+      setIsSavingPlanner(false);
+    }
+  };
+
+  const testPlannerConfig = async () => {
+    setIsSavingPlanner(true);
+    try {
+      const result = await plannerConfigService.test(plannerProjectDraft);
+      setPlannerValidation({
+        ok: result.ok,
+        message: result.adapter.message,
+        restartRequired: result.adapter.restartRequired,
+        restartRequiredKeys: result.adapter.restartRequiredKeys,
+      });
+      addActivity(result.adapter.message, result.ok ? 'success' : 'error');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to test planner config.';
+      setPlannerValidation({ ok: false, message, restartRequired: false, restartRequiredKeys: [] });
+      addActivity(message, 'error');
+    } finally {
+      setIsSavingPlanner(false);
     }
   };
 
@@ -666,7 +864,19 @@ export function PreferencesPage() {
             ...(activeSetupTab === 'agent' ? activeSetupTabButtonStyle : undefined),
           }}
         >
-          Agent Setup
+          Skill Setup
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeSetupTab === 'planner'}
+          onClick={() => setActiveSetupTab('planner')}
+          style={{
+            ...setupTabButtonStyle,
+            ...(activeSetupTab === 'planner' ? activeSetupTabButtonStyle : undefined),
+          }}
+        >
+          Planner Setup
         </button>
         <button
           type="button"
@@ -935,14 +1145,43 @@ export function PreferencesPage() {
               </button>
             </div>
 
-            <section style={summaryGridStyle} aria-label="Agent skill library">
+            <h3 style={sectionHeadingStyle}>Repository Skills</h3>
+            <section style={summaryGridStyle} aria-label="Repository agent skills">
+              {repositorySkills.length === 0 && !isLoadingAgentSkills ? (
+                <div style={{ ...readOnlyFieldStyle, gridColumn: '1 / -1' }}>
+                  <span style={readOnlyLabelStyle}>No repository skills</span>
+                  <strong>Configure `AGENT_REPO_DIRECTORIES` or add skills under the package agent repository.</strong>
+                </div>
+              ) : (
+                repositorySkills.map((skill) => (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    onClick={() => selectSkill(skill)}
+                    style={{
+                      ...summaryCardStyle,
+                      ...(skill.id === activeSkillId ? activeSummaryCardStyle : undefined),
+                    }}
+                  >
+                    <strong>{skill.name || 'Untitled skill'}</strong>
+                    <span>Repository: {skill.origin?.repoName ?? 'Package'}</span>
+                    <span>Version: {skill.origin?.version ?? 'n/a'}</span>
+                    <span>Capabilities: {skill.capabilities?.length ? skill.capabilities.join(', ') : 'None'}</span>
+                    <span>Executor: {skill.executable.mode}</span>
+                  </button>
+                ))
+              )}
+            </section>
+
+            <h3 style={{ ...sectionHeadingStyle, marginTop: 18 }}>My Skills</h3>
+            <section style={summaryGridStyle} aria-label="Editable user agent skills">
               {agentSkills.length === 0 && !isLoadingAgentSkills ? (
                 <div style={{ ...readOnlyFieldStyle, gridColumn: '1 / -1' }}>
                   <span style={readOnlyLabelStyle}>No skills yet</span>
                   <strong>Add a skill to start building the agent library.</strong>
                 </div>
               ) : (
-                agentSkills.map((skill) => (
+                userSkills.map((skill) => (
                   <button
                     key={skill.id}
                     type="button"
@@ -960,6 +1199,12 @@ export function PreferencesPage() {
                   </button>
                 ))
               )}
+              {userSkills.length === 0 && agentSkills.length > 0 && !isLoadingAgentSkills && (
+                <div style={{ ...readOnlyFieldStyle, gridColumn: '1 / -1' }}>
+                  <span style={readOnlyLabelStyle}>No personal skills yet</span>
+                  <strong>Add a skill or duplicate a repository skill to customize it.</strong>
+                </div>
+              )}
             </section>
           </section>
 
@@ -968,33 +1213,54 @@ export function PreferencesPage() {
               <div>
                 <h2 style={{ margin: 0 }}>Skill Editor</h2>
                 <p style={{ margin: '6px 0 0', color: '#667085' }}>
-                  Fill in the headings agents need for consistent prompt injection.
+                  {activeSkillIsRepositorySkill
+                    ? 'Repository skills are read-only. Duplicate one to customize it.'
+                    : 'Fill in the headings agents need for consistent prompt injection.'}
                 </p>
               </div>
               <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}>
-                <button type="button" onClick={saveSkill} disabled={isSavingAgentSkill} style={primaryButtonStyle}>
-                  {isSavingAgentSkill ? 'Saving...' : 'Save Skill'}
-                </button>
-                <button type="button" onClick={deleteSkill} disabled={isSavingAgentSkill || agentSkills.length === 0} style={dangerButtonStyle}>
-                  Delete
-                </button>
+                {activeSkillIsRepositorySkill ? (
+                  <button type="button" onClick={() => void duplicateSkill()} disabled={isSavingAgentSkill} style={primaryButtonStyle}>
+                    {isSavingAgentSkill ? 'Duplicating...' : 'Duplicate to My Skills'}
+                  </button>
+                ) : (
+                  <>
+                    <button type="button" onClick={saveSkill} disabled={isSavingAgentSkill} style={primaryButtonStyle}>
+                      {isSavingAgentSkill ? 'Saving...' : 'Save Skill'}
+                    </button>
+                    <button type="button" onClick={deleteSkill} disabled={isSavingAgentSkill || userSkills.length === 0} style={dangerButtonStyle}>
+                      Delete
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
               <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
                 Name
-                <input value={skillDraft.name} onChange={(event) => updateSkillDraft({ name: event.target.value })} style={inputStyle} />
+                <input
+                  value={skillDraft.name}
+                  onChange={(event) => updateSkillDraft({ name: event.target.value })}
+                  disabled={activeSkillIsRepositorySkill}
+                  style={inputStyle}
+                />
               </label>
               <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
                 Category
-                <input value={skillDraft.category} onChange={(event) => updateSkillDraft({ category: event.target.value })} style={inputStyle} />
+                <input
+                  value={skillDraft.category}
+                  onChange={(event) => updateSkillDraft({ category: event.target.value })}
+                  disabled={activeSkillIsRepositorySkill}
+                  style={inputStyle}
+                />
               </label>
               <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
                 Status
                 <select
                   value={skillDraft.status}
                   onChange={(event) => updateSkillDraft({ status: event.target.value === 'enabled' ? 'enabled' : 'draft' })}
+                  disabled={activeSkillIsRepositorySkill}
                   style={inputStyle}
                 >
                   <option value="draft">Draft</option>
@@ -1006,6 +1272,7 @@ export function PreferencesPage() {
                 <textarea
                   value={skillDraft.purpose}
                   onChange={(event) => updateSkillDraft({ purpose: event.target.value })}
+                  disabled={activeSkillIsRepositorySkill}
                   rows={4}
                   style={textareaStyle}
                 />
@@ -1015,6 +1282,7 @@ export function PreferencesPage() {
                 <textarea
                   value={skillDraft.whenToUse}
                   onChange={(event) => updateSkillDraft({ whenToUse: event.target.value })}
+                  disabled={activeSkillIsRepositorySkill}
                   rows={4}
                   style={textareaStyle}
                 />
@@ -1024,6 +1292,7 @@ export function PreferencesPage() {
                 <textarea
                   value={listToLines(skillDraft.inputs)}
                   onChange={(event) => updateSkillDraft({ inputs: linesToList(event.target.value) })}
+                  disabled={activeSkillIsRepositorySkill}
                   rows={4}
                   placeholder="One input per line"
                   style={textareaStyle}
@@ -1034,6 +1303,7 @@ export function PreferencesPage() {
                 <textarea
                   value={listToLines(skillDraft.requiredTools)}
                   onChange={(event) => updateSkillDraft({ requiredTools: linesToList(event.target.value) })}
+                  disabled={activeSkillIsRepositorySkill}
                   rows={4}
                   placeholder="One tool per line"
                   style={textareaStyle}
@@ -1044,6 +1314,7 @@ export function PreferencesPage() {
                 <textarea
                   value={skillDraft.procedure}
                   onChange={(event) => updateSkillDraft({ procedure: event.target.value })}
+                  disabled={activeSkillIsRepositorySkill}
                   rows={6}
                   style={textareaStyle}
                 />
@@ -1053,6 +1324,7 @@ export function PreferencesPage() {
                 <textarea
                   value={skillDraft.expectedOutput}
                   onChange={(event) => updateSkillDraft({ expectedOutput: event.target.value })}
+                  disabled={activeSkillIsRepositorySkill}
                   rows={4}
                   style={textareaStyle}
                 />
@@ -1062,6 +1334,7 @@ export function PreferencesPage() {
                 <textarea
                   value={skillDraft.safetyConstraints}
                   onChange={(event) => updateSkillDraft({ safetyConstraints: event.target.value })}
+                  disabled={activeSkillIsRepositorySkill}
                   rows={4}
                   style={textareaStyle}
                 />
@@ -1076,6 +1349,7 @@ export function PreferencesPage() {
                 Executor mode
                 <select
                   value={skillDraft.executable.mode}
+                  disabled={activeSkillIsRepositorySkill}
                   onChange={(event) =>
                     updateSkillExecutable({
                       ...defaultAgentSkillExecutable(),
@@ -1095,6 +1369,7 @@ export function PreferencesPage() {
                   Approved executor
                   <select
                     value={skillDraft.executable.catalogId ?? ''}
+                    disabled={activeSkillIsRepositorySkill}
                     onChange={(event) => {
                       const selected = executorCatalog.find((item) => item.id === event.target.value);
                       updateSkillExecutable({
@@ -1126,6 +1401,7 @@ export function PreferencesPage() {
                     <input
                       value={skillDraft.executable.image ?? ''}
                       onChange={(event) => updateSkillExecutable({ image: event.target.value })}
+                      disabled={activeSkillIsRepositorySkill}
                       placeholder="ghcr.io/org/skill-runner:latest"
                       style={inputStyle}
                     />
@@ -1135,6 +1411,7 @@ export function PreferencesPage() {
                     <input
                       value={skillDraft.executable.command ?? ''}
                       onChange={(event) => updateSkillExecutable({ command: event.target.value })}
+                      disabled={activeSkillIsRepositorySkill}
                       placeholder="python"
                       style={inputStyle}
                     />
@@ -1149,6 +1426,7 @@ export function PreferencesPage() {
                     <textarea
                       value={listToLines(skillDraft.executable.args)}
                       onChange={(event) => updateSkillExecutable({ args: linesToList(event.target.value) })}
+                      disabled={activeSkillIsRepositorySkill}
                       rows={3}
                       style={textareaStyle}
                     />
@@ -1158,6 +1436,7 @@ export function PreferencesPage() {
                     <input
                       value={skillDraft.executable.workingDir ?? '/workspace'}
                       onChange={(event) => updateSkillExecutable({ workingDir: event.target.value })}
+                      disabled={activeSkillIsRepositorySkill}
                       style={inputStyle}
                     />
                   </label>
@@ -1169,6 +1448,7 @@ export function PreferencesPage() {
                       max={900}
                       value={skillDraft.executable.timeoutSeconds}
                       onChange={(event) => updateSkillExecutable({ timeoutSeconds: Number(event.target.value) })}
+                      disabled={activeSkillIsRepositorySkill}
                       style={inputStyle}
                     />
                   </label>
@@ -1177,6 +1457,7 @@ export function PreferencesPage() {
                     <select
                       value={skillDraft.executable.network}
                       onChange={(event) => updateSkillExecutable({ network: event.target.value === 'egress' ? 'egress' : 'none' })}
+                    disabled={activeSkillIsRepositorySkill}
                       style={inputStyle}
                     >
                       <option value="none">No network</option>
@@ -1188,6 +1469,7 @@ export function PreferencesPage() {
                     <input
                       value={skillDraft.executable.envAllowlist.join(', ')}
                       onChange={(event) => updateSkillExecutable({ envAllowlist: linesToList(event.target.value) })}
+                      disabled={activeSkillIsRepositorySkill}
                       placeholder="OPTIONAL_ENV_NAME, ANOTHER_ENV_NAME"
                       style={inputStyle}
                     />
@@ -1209,6 +1491,12 @@ export function PreferencesPage() {
                 <span style={readOnlyLabelStyle}>Directory</span>
                 <strong>{skillPackagePreview.directoryName}/</strong>
               </div>
+              {activeSkillIsRepositorySkill && (
+                <div style={{ ...readOnlyFieldStyle, minWidth: 220 }}>
+                  <span style={readOnlyLabelStyle}>Repository</span>
+                  <strong>{skillDraft.origin?.repoName ?? 'Package skill'}</strong>
+                </div>
+              )}
             </div>
             <pre style={skillPreviewStyle}>{skillPackagePreview.skillMd}</pre>
           </section>
@@ -1260,6 +1548,231 @@ export function PreferencesPage() {
                   );
                 })
               )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {activeSetupTab === 'planner' && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <section style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Planner Defaults</h2>
+                <p style={{ margin: '6px 0 0', color: '#667085' }}>
+                  Select a read-only planner spec and bind its model roles to configured LiteLLM aliases.
+                </p>
+              </div>
+              <button type="button" onClick={() => void savePlannerDefault()} disabled={isSavingPlanner || isLoadingPlanner} style={primaryButtonStyle}>
+                {isSavingPlanner ? 'Saving...' : 'Save Defaults'}
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Planner spec
+                <select
+                  value={plannerDefaultDraft.specId}
+                  onChange={(event) => {
+                    const spec = plannerSpecs.find((item) => item.id === event.target.value);
+                    updatePlannerDefaultDraft(createPlannerConfig(spec, plannerModelAliases));
+                  }}
+                  disabled={plannerSpecs.length === 0}
+                  style={inputStyle}
+                >
+                  {plannerSpecs.map((spec) => (
+                    <option key={spec.id} value={spec.id}>
+                      {spec.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div style={{ ...readOnlyFieldStyle, gridColumn: 'span 6' }}>
+                <span style={readOnlyLabelStyle}>Engine</span>
+                <strong>{plannerDefaultSpec?.engine ?? 'No planner spec loaded'}</strong>
+                <span>{plannerDefaultSpec?.description ?? 'Configure PLANNER_REPO_DIRECTORIES or add specs under agent-repo/planners.'}</span>
+              </div>
+
+              {(plannerDefaultSpec?.modelRoles ?? []).map((role) => (
+                <label key={role} style={{ ...fieldStyle, gridColumn: 'span 4' }}>
+                  {role} model
+                  <select
+                    value={plannerDefaultDraft.roleBindings[role] ?? plannerModelAliases[0]?.alias ?? 'LLM_A'}
+                    onChange={(event) => updatePlannerRoleBinding('default', role, event.target.value)}
+                    style={inputStyle}
+                  >
+                    {plannerModelAliases.map((model) => (
+                      <option key={model.alias} value={model.alias}>
+                        {model.alias}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+          </section>
+
+          <section style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Project Override</h2>
+                <p style={{ margin: '6px 0 0', color: '#667085' }}>
+                  Override planner selection, model bindings, and runtime policy for the active project only.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void savePlannerProject()}
+                disabled={isSavingPlanner || !activeProject || isLoadingPlanner}
+                style={primaryButtonStyle}
+              >
+                {isSavingPlanner ? 'Saving...' : 'Save Project Override'}
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Planner spec
+                <select
+                  value={plannerProjectDraft.specId}
+                  onChange={(event) => {
+                    const spec = plannerSpecs.find((item) => item.id === event.target.value);
+                    updatePlannerProjectDraft(createPlannerConfig(spec, plannerModelAliases));
+                  }}
+                  disabled={plannerSpecs.length === 0}
+                  style={inputStyle}
+                >
+                  {plannerSpecs.map((spec) => (
+                    <option key={spec.id} value={spec.id}>
+                      {spec.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
+                Context strategy
+                <select
+                  value={plannerProjectDraft.contextPolicy.strategy}
+                  onChange={(event) =>
+                    updatePlannerContext('project', { strategy: event.target.value as PlannerConfig['contextPolicy']['strategy'] })
+                  }
+                  style={inputStyle}
+                >
+                  <option value="summarize">Summarize</option>
+                  <option value="truncate">Truncate</option>
+                  <option value="clear">Clear</option>
+                  <option value="prompt">Prompt</option>
+                </select>
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
+                Workspace mode
+                <select
+                  value={plannerProjectDraft.workspaceMode}
+                  onChange={(event) => updatePlannerProjectDraft({ workspaceMode: event.target.value as PlannerConfig['workspaceMode'] })}
+                  style={inputStyle}
+                >
+                  <option value="project-workspace">Project workspace</option>
+                  <option value="goose-workspace">Goose workspace</option>
+                  <option value="read-only">Read-only</option>
+                </select>
+              </label>
+
+              {(plannerProjectSpec?.modelRoles ?? []).map((role) => (
+                <label key={role} style={{ ...fieldStyle, gridColumn: 'span 4' }}>
+                  {role} model
+                  <select
+                    value={plannerProjectDraft.roleBindings[role] ?? plannerModelAliases[0]?.alias ?? 'LLM_A'}
+                    onChange={(event) => updatePlannerRoleBinding('project', role, event.target.value)}
+                    style={inputStyle}
+                  >
+                    {plannerModelAliases.map((model) => (
+                      <option key={model.alias} value={model.alias}>
+                        {model.alias}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+
+              <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
+                Max turns
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={plannerProjectDraft.contextPolicy.maxTurns}
+                  onChange={(event) => updatePlannerContext('project', { maxTurns: Number(event.target.value) })}
+                  style={inputStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 3' }}>
+                Subagent max turns
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={plannerProjectDraft.contextPolicy.subagentMaxTurns}
+                  onChange={(event) => updatePlannerContext('project', { subagentMaxTurns: Number(event.target.value) })}
+                  style={inputStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Skill visibility
+                <select
+                  value={plannerProjectDraft.skillPolicy.visibility}
+                  onChange={(event) =>
+                    updatePlannerSkillPolicy('project', { visibility: event.target.value as PlannerConfig['skillPolicy']['visibility'] })
+                  }
+                  style={inputStyle}
+                >
+                  <option value="project-enabled">Enabled project skills</option>
+                  <option value="all-enabled">All enabled skills</option>
+                  <option value="allowlist">Allowlist</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Skill Visibility And Validation</h2>
+                <p style={{ margin: '6px 0 0', color: '#667085' }}>
+                  Keep planner-visible skills explicit and test whether the current Goose adapter can accept the setup.
+                </p>
+              </div>
+              <button type="button" onClick={() => void testPlannerConfig()} disabled={isSavingPlanner || !plannerProjectDraft.specId} style={secondaryButtonStyle}>
+                Test Planner Config
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
+              <div style={{ ...readOnlyFieldStyle, gridColumn: 'span 6' }}>
+                <span style={readOnlyLabelStyle}>Enabled project skills</span>
+                <strong>{enabledSkillIds.length}</strong>
+                <span>{enabledSkillIds.length ? enabledSkillIds.join(', ') : 'No skills are enabled for the active project yet.'}</span>
+              </div>
+              <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
+                Allowlisted skill IDs
+                <textarea
+                  value={listToLines(plannerProjectDraft.skillPolicy.allowedSkillIds)}
+                  onChange={(event) => updatePlannerSkillPolicy('project', { allowedSkillIds: linesToList(event.target.value) })}
+                  rows={4}
+                  placeholder="One skill id per line"
+                  style={textareaStyle}
+                />
+              </label>
+              <div style={{ ...readOnlyFieldStyle, gridColumn: 'span 6' }}>
+                <span style={readOnlyLabelStyle}>Restart-required settings</span>
+                <strong>{plannerProjectSpec?.runtime.restartRequiredKeys.length ? 'May require Goose restart' : 'Request-level only'}</strong>
+                <span>{plannerProjectSpec?.runtime.restartRequiredKeys.join(', ') || 'No restart-required keys declared.'}</span>
+              </div>
+              <div style={{ ...readOnlyFieldStyle, gridColumn: 'span 6' }}>
+                <span style={readOnlyLabelStyle}>Validation</span>
+                <strong>{plannerValidation ? (plannerValidation.ok ? 'Passed' : 'Needs attention') : 'Not tested'}</strong>
+                <span>{plannerValidation?.message ?? 'Run a validation test after changing planner bindings.'}</span>
+                {plannerValidation?.restartRequired && <span>Restart keys: {plannerValidation.restartRequiredKeys.join(', ')}</span>}
+              </div>
             </div>
           </section>
         </div>
