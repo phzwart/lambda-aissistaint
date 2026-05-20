@@ -10,10 +10,14 @@ From the `cli/` directory or with the package on `PYTHONPATH`:
 python -m paper_reader_summary \
   --input /path/to/paper.pdf \
   --output /path/to/output \
+  --litellm-url http://127.0.0.1:4000 \
+  --litellm-runtime /path/to/litellm-runtime.json \
   --llm-model LLM_A \
   --summary-llm-model LLM_A \
   --embedding-model st-multi-qa-MiniLM-L6-cos-v1
 ```
+
+`litellm-runtime.json` is written by the API from Preferences (deployment alias `LLM_A`, provider model metadata, proxy URL). The runner always calls LiteLLM using the alias, never the raw provider model name.
 
 The model arguments are supplied by the host from AIssistAInt setup at runtime. They are not hardcoded into the skill or container image.
 
@@ -24,9 +28,16 @@ The host must inject:
 
 ## Outputs
 
-- `summary.md`: human-readable structured summary.
+- `extracted.txt`: full text extracted from the PDF via PaperQA2's pymupdf parser.
+- `abstract.txt`: verbatim abstract section extracted heuristically from the paper text.
+- `extraction_metadata.json`: title/authors/page-count hints from extraction, plus abstract extraction flags.
+- `summary.md`: human-readable structured summary (citations use the upload stem, e.g. `{timestamp}-{uuid}-{name}.pdf`, not `paper.pdf`).
 - `summary.json`: structured record containing the summary and safe metadata.
-- `paper_metadata.json`: runtime model aliases, embedding model, source file metadata, warnings, and safe PaperQA2 response metadata.
+- `extended_abstract.md`: LLM-expanded abstract (~5× length), guided by per-project instructions in Setup → Paper Reader Summary.
+- `follow_up_questions.json`: `{ "depth": [5 questions], "breadth": [5 questions] }` grounded in the paper.
+- `paper_metadata.json`: runtime model aliases, `paper_id`, `citation_label`, embedding model, warnings, and safe PaperQA2 response metadata.
+
+Per-project processing instructions are stored on the project skill binding (`processingConfig`) and passed via `skill-runtime.json` at run time. Defaults live in `defaults.json`.
 
 ## Failure Behavior
 
@@ -47,6 +58,8 @@ The runner uses PaperQA2's manual `Docs.aadd` / `Docs.aquery` workflow instead o
 
 ## Container Build
 
+Rebuild the runner image after changing the Python CLI (including LiteLLM routing fixes):
+
 ```bash
 podman_services/build_paperqa2_runner.sh
 ```
@@ -65,6 +78,8 @@ podman run --rm \
   localhost/aissistaint/paperqa2-paper-reader:latest \
   --input /workspace/input/paper.pdf \
   --output /workspace/output \
+  --litellm-url http://127.0.0.1:4000 \
+  --litellm-runtime /workspace/input/litellm-runtime.json \
   --llm-model LLM_A \
   --summary-llm-model LLM_A \
   --embedding-model st-multi-qa-MiniLM-L6-cos-v1

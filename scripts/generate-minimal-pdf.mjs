@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+/** Writes a tiny valid PDF with extractable text for PaperQA smoke tests. */
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const fixturesDir = join(root, 'agent-repo/skills/paper-reader-summary/fixtures');
+const outputPath = join(fixturesDir, 'minimal.pdf');
+
+// Minimal PDF 1.4 with one page of text (Helvetica, "Mock smoke paper").
+const pdf = Buffer.from(
+  `%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj
+4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+5 0 obj<</Length 51>>stream
+BT /F1 18 Tf 72 720 Td (Mock smoke paper) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000052 00000 n 
+0000000101 00000 n 
+0000000214 00000 n 
+0000000279 00000 n 
+trailer<</Size 6/Root 1 0 R>>
+startxref
+380
+%%EOF`,
+  'utf8',
+);
+
+mkdirSync(fixturesDir, { recursive: true });
+writeFileSync(outputPath, pdf);
+console.log(`Wrote ${outputPath} (${pdf.length} bytes)`);

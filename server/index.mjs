@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/client-s3';
 import cors from 'cors';
 import express from 'express';
+import multer from 'multer';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -25,6 +26,39 @@ import {
   validatePlannerExecutionPayload,
 } from './lib/plannerSkillCatalog.mjs';
 import { configuredPlannerRepoDirectories, loadPlannerSpecCatalog } from './lib/plannerRepo.mjs';
+import { ingestDocument as wikiIngestDocument } from './lib/wiki/ingest.mjs';
+import {
+  ingestProcessedFileToWiki,
+  listWikiProcessedSources,
+  syncProcessedFilesToWiki,
+} from './lib/wiki/processedSources.mjs';
+import {
+  defaultWikiCategory,
+  normalizeCategory as wikiNormalizeCategory,
+  pageRefKey as wikiPageRefKey,
+  slugifyTitle as wikiSlugifyTitle,
+  wikiCategories,
+} from './lib/wiki/paths.mjs';
+import { parsePage as wikiParsePage } from './lib/wiki/pageDocument.mjs';
+import { queryWiki as wikiQuery } from './lib/wiki/query.mjs';
+import { buildPaperqaLitellmRuntime } from './lib/paperqaRuntime.mjs';
+import {
+  PAPER_READER_SKILL_ID,
+  normalizePaperReaderProcessingConfig,
+  resolvePaperReaderProcessing,
+} from './lib/paperReaderProcessingConfig.mjs';
+import {
+  createProjectProcessJob,
+  findFileLogFromJobs,
+  getProjectProcessJob,
+  listProjectProcessJobs,
+  serializeProjectProcessJob,
+} from './lib/projectProcessJobs.mjs';
+import { readProcessLogFromStorage } from './lib/projectFileProcess.mjs';
+import { parsedStemFromObjectKey, processLogObjectKey } from './lib/projectParsedPaths.mjs';
+import { runProjectFileProcessJob } from './lib/runProjectFileProcessJob.mjs';
+import { listProjectFiles, uploadProjectFiles } from './lib/projectFiles.mjs';
+import { createWikiStorage } from './lib/wiki/storage.mjs';
 
 const loadEnvFile = (path, { allowEmpty = true } = {}) => {
   if (!path || !existsSync(path)) {
@@ -83,6 +117,28 @@ const projectBucketPrefix = process.env.PROJECT_BUCKET_PREFIX ?? 'aissistaint-pr
 const projectLoadedPrefix = process.env.PROJECT_LOADED_PREFIX ?? 'loaded';
 const projectParsedPrefix = process.env.PROJECT_PARSED_PREFIX ?? 'parsed';
 const projectMetadataObjectKey = process.env.PROJECT_METADATA_OBJECT_KEY ?? 'project.json';
+const wikiBucketPrefix = (process.env.WIKI_BUCKET_PREFIX ?? 'wiki').replace(/^\/+|\/+$/g, '') || 'wiki';
+const wikiMetadataPrefix = (process.env.WIKI_METADATA_PREFIX ?? 'metadata').replace(/^\/+|\/+$/g, '') || 'metadata';
+const wikiMaxChunksPerIngest = Math.max(
+  1,
+  Number.parseInt(process.env.WIKI_MAX_CHUNKS_PER_INGEST ?? '12', 10) || 12,
+);
+const wikiMaxPageBytes = Math.max(
+  1024,
+  Number.parseInt(process.env.WIKI_MAX_PAGE_BYTES ?? '131072', 10) || 131072,
+);
+const wikiDefaultTier = String(process.env.WIKI_LLM_TIER ?? 'a').toLowerCase();
+const projectMaxUploadBytes = Math.max(
+  1024 * 1024,
+  Number.parseInt(process.env.PROJECT_MAX_UPLOAD_BYTES ?? String(64 * 1024 * 1024), 10) || 64 * 1024 * 1024,
+);
+const projectUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: 20,
+    fileSize: projectMaxUploadBytes,
+  },
+});
 const publicAppUrl = process.env.PUBLIC_APP_URL ?? 'https://aissistaint.localhost:8443';
 const allowedOrigins = new Set(
   (process.env.CORS_ALLOWED_ORIGINS ?? `${publicAppUrl},http://localhost:5173,http://127.0.0.1:5173`)
@@ -98,6 +154,12 @@ const explicitLlmDevMode = process.env.LLM_DEV_MODE === 'true';
 const llmRequestTimeoutMs = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ?? '30000', 10);
 const liteLlmUrl = (process.env.INTERNAL_LITELLM_URL ?? 'http://127.0.0.1:4000').replace(/\/+$/g, '');
 const liteLlmApiKey = process.env.LITELLM_API_KEY ?? '';
+const paperqaLitellmUrl = (process.env.PAPERQA_LITELLM_URL ?? liteLlmUrl).replace(/\/+$/g, '');
+const paperqaLitellmApiKey = process.env.PAPERQA_LITELLM_API_KEY ?? liteLlmApiKey;
+const paperqaEmbeddingModel =
+  process.env.PAPERQA_DEFAULT_EMBEDDING_MODEL ?? 'st-multi-qa-MiniLM-L6-cos-v1';
+const paperqaLlmTier = String(process.env.PAPERQA_LLM_TIER ?? wikiDefaultTier).toLowerCase();
+const paperqaIngestWiki = process.env.PAPERQA_PROCESS_INGEST_WIKI !== 'false';
 const liteLlmAdminBrokerUrl = (process.env.LITELLM_ADMIN_BROKER_URL ?? 'http://127.0.0.1:8788').replace(/\/+$/g, '');
 const liteLlmAdminBrokerToken = process.env.LITELLM_ADMIN_BROKER_TOKEN ?? '';
 const liteLlmSecretBrokerToken = process.env.LITELLM_SECRET_BROKER_TOKEN ?? '';
@@ -358,6 +420,22 @@ const requireAuth = async (request, response, next) => {
   }
 };
 
+const resetProjectDbInit = () => {
+  projectDbReady = false;
+  projectDbInitPromise = null;
+};
+
+const isMissingProjectsTableError = (error) =>
+  error?.code === '42P01' && /relation "projects" does not exist/i.test(String(error?.message ?? ''));
+
+const verifyProjectSchema = async () => {
+  const result = await projectDb.query(
+    `SELECT to_regclass('public.projects') AS projects_table, to_regclass('public.project_members') AS members_table`,
+  );
+  const row = result.rows[0] ?? {};
+  return Boolean(row.projects_table && row.members_table);
+};
+
 const initializeProjectDb = async () => {
   const client = await projectDb.connect();
   try {
@@ -407,14 +485,21 @@ const requireProjectDb = async () => {
   }
 
   if (projectDbReady) {
-    return projectDb;
+    const schemaOk = await verifyProjectSchema();
+    if (!schemaOk) {
+      log('Project schema missing; re-initializing app database tables.');
+      resetProjectDbInit();
+    }
   }
 
-  projectDbInitPromise ??= initializeProjectDb().catch((error) => {
-    projectDbInitPromise = null;
-    throw error;
-  });
-  await projectDbInitPromise;
+  if (!projectDbReady) {
+    projectDbInitPromise ??= initializeProjectDb().catch((error) => {
+      projectDbInitPromise = null;
+      throw error;
+    });
+    await projectDbInitPromise;
+  }
+
   return projectDb;
 };
 
@@ -485,13 +570,15 @@ const ensureProjectBucket = async ({ bucketName, loadedPrefix, parsedPrefix }) =
     await minioClient.send(new CreateBucketCommand({ Bucket: bucketName }));
   }
 
+  const emptyPrefixBody = Buffer.alloc(0);
   await Promise.all(
     [loadedPrefix, parsedPrefix].map((prefix) =>
       minioClient.send(
         new PutObjectCommand({
           Bucket: bucketName,
           Key: `${objectPrefix(prefix)}/`,
-          Body: '',
+          Body: emptyPrefixBody,
+          ContentLength: 0,
         }),
       ),
     ),
@@ -996,12 +1083,22 @@ const normalizeProjectSkillBindings = (bindings, skills) => {
   const skillIds = new Set(skills.map((skill) => skill.id));
   return (Array.isArray(bindings) ? bindings : [])
     .filter((binding) => skillIds.has(String(binding.skillId ?? '')))
-    .map((binding, index) => ({
-      skillId: String(binding.skillId),
-      enabled: Boolean(binding.enabled),
-      priority: Number.isFinite(Number(binding.priority)) ? Number(binding.priority) : index + 1,
-      notes: trimBounded(binding.notes, 'Binding notes', 500),
-    }))
+    .map((binding, index) => {
+      const skillId = String(binding.skillId);
+      const normalized = {
+        skillId,
+        enabled: Boolean(binding.enabled),
+        priority: Number.isFinite(Number(binding.priority)) ? Number(binding.priority) : index + 1,
+        notes: trimBounded(binding.notes, 'Binding notes', 500),
+      };
+      if (skillId === PAPER_READER_SKILL_ID && binding.processingConfig) {
+        const processingConfig = normalizePaperReaderProcessingConfig(binding.processingConfig);
+        if (processingConfig) {
+          normalized.processingConfig = processingConfig;
+        }
+      }
+      return normalized;
+    })
     .sort((a, b) => a.priority - b.priority);
 };
 
@@ -1228,6 +1325,221 @@ const loadProjectPlannerContext = async (user, projectId) => {
   };
 };
 
+const gooseAcpUrl = () => `${internalGooseUrl}/acp`;
+
+const gooseAcpHeaders = (extra = {}) => ({
+  'Content-Type': 'application/json',
+  Accept: 'application/json, text/event-stream',
+  ...(gooseSecretKey ? { 'X-Secret-Key': gooseSecretKey } : {}),
+  ...extra,
+});
+
+const parseAcpSseMessages = (rawEvent) => {
+  const data = rawEvent
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .join('\n');
+  if (!data || data === '[DONE]') {
+    return null;
+  }
+  return JSON.parse(data);
+};
+
+const contentBlockText = (content) => {
+  if (!content) {
+    return '';
+  }
+  if (content.type === 'text' && typeof content.text === 'string') {
+    return content.text;
+  }
+  if (Array.isArray(content)) {
+    return content.map(contentBlockText).filter(Boolean).join('');
+  }
+  return '';
+};
+
+const extractAcpAgentText = (message) => {
+  const params = message?.params ?? {};
+  const update = params.update ?? params.sessionUpdate ?? {};
+  const kind = update.sessionUpdate ?? update.type;
+  if (message?.method !== 'session/update' || kind !== 'agent_message_chunk') {
+    return '';
+  }
+  return contentBlockText(update.content);
+};
+
+const createGooseAcpClient = async ({ timeoutMs = 120000 } = {}) => {
+  if (!internalGooseUrl) {
+    throw new Error('INTERNAL_GOOSE_URL is not configured.');
+  }
+
+  let nextRequestId = 1;
+  const pending = new Map();
+  const assistantText = [];
+  const streamController = new AbortController();
+  const timeoutHandles = new Set();
+
+  const requestBody = (method, params = {}) => ({
+    jsonrpc: '2.0',
+    id: nextRequestId++,
+    method,
+    params,
+  });
+
+  const initializeRequest = requestBody('initialize', {
+    protocolVersion: 1,
+    clientCapabilities: {},
+  });
+  const initializeResponse = await fetch(gooseAcpUrl(), {
+    method: 'POST',
+    headers: gooseAcpHeaders(),
+    body: JSON.stringify(initializeRequest),
+  });
+  const initializeBody = await jsonResponse(initializeResponse);
+  if (!initializeResponse.ok) {
+    throw new Error(initializeBody.error?.message ?? initializeBody.error ?? `Goose ACP initialize failed with ${initializeResponse.status}`);
+  }
+  const connectionId = initializeResponse.headers.get('acp-connection-id');
+  if (!connectionId) {
+    throw new Error('Goose ACP initialize did not return Acp-Connection-Id.');
+  }
+
+  const failPending = (error) => {
+    for (const waiter of pending.values()) {
+      waiter.reject(error);
+      clearTimeout(waiter.timeout);
+    }
+    pending.clear();
+  };
+
+  const sseResponse = await fetch(gooseAcpUrl(), {
+    method: 'GET',
+    headers: gooseAcpHeaders({
+      Accept: 'text/event-stream',
+      'Acp-Connection-Id': connectionId,
+    }),
+    signal: streamController.signal,
+  });
+  if (!sseResponse.ok || !sseResponse.body) {
+    throw new Error(`Goose ACP stream failed with ${sseResponse.status}`);
+  }
+
+  const reader = sseResponse.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const streamTask = (async () => {
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let eventEnd;
+        while ((eventEnd = buffer.indexOf('\n\n')) >= 0) {
+          const rawEvent = buffer.slice(0, eventEnd);
+          buffer = buffer.slice(eventEnd + 2);
+          const message = parseAcpSseMessages(rawEvent);
+          if (!message) {
+            continue;
+          }
+          const chunkText = extractAcpAgentText(message);
+          if (chunkText) {
+            assistantText.push(chunkText);
+          }
+          if (message.id !== undefined && pending.has(message.id)) {
+            const waiter = pending.get(message.id);
+            pending.delete(message.id);
+            clearTimeout(waiter.timeout);
+            if (message.error) {
+              waiter.reject(new Error(message.error.message ?? JSON.stringify(message.error)));
+            } else {
+              waiter.resolve(message);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (!streamController.signal.aborted) {
+        failPending(error instanceof Error ? error : new Error('Goose ACP stream failed.'));
+      }
+    }
+  })();
+
+  const send = async (method, params = {}, { sessionId } = {}) => {
+    const body = requestBody(method, params);
+    const responsePromise = new Promise((resolvePromise, rejectPromise) => {
+      const timeout = setTimeout(() => {
+        pending.delete(body.id);
+        rejectPromise(new Error(`Goose ACP request ${method} timed out.`));
+      }, timeoutMs);
+      timeoutHandles.add(timeout);
+      pending.set(body.id, {
+        resolve: (message) => {
+          timeoutHandles.delete(timeout);
+          resolvePromise(message);
+        },
+        reject: (error) => {
+          timeoutHandles.delete(timeout);
+          rejectPromise(error);
+        },
+        timeout,
+      });
+    });
+    const response = await fetch(gooseAcpUrl(), {
+      method: 'POST',
+      headers: gooseAcpHeaders({
+        'Acp-Connection-Id': connectionId,
+        ...(sessionId ? { 'Acp-Session-Id': sessionId } : {}),
+      }),
+      body: JSON.stringify(body),
+    });
+    if (![200, 202].includes(response.status)) {
+      pending.delete(body.id);
+      const text = await response.text();
+      throw new Error(text || `Goose ACP ${method} failed with ${response.status}`);
+    }
+    if (response.status === 200) {
+      const waiter = pending.get(body.id);
+      if (waiter) {
+        pending.delete(body.id);
+        clearTimeout(waiter.timeout);
+      }
+      return jsonResponse(response);
+    }
+    return responsePromise;
+  };
+
+  const close = async () => {
+    streamController.abort();
+    for (const timeout of timeoutHandles) {
+      clearTimeout(timeout);
+    }
+    timeoutHandles.clear();
+    pending.clear();
+    try {
+      await fetch(gooseAcpUrl(), {
+        method: 'DELETE',
+        headers: gooseAcpHeaders({ 'Acp-Connection-Id': connectionId }),
+      });
+    } catch {
+      // Connection cleanup is best effort.
+    }
+    try {
+      await streamTask;
+    } catch {
+      // The stream normally errors when aborted locally.
+    }
+  };
+
+  return {
+    send,
+    close,
+    getAssistantText: () => assistantText.join('').trim(),
+  };
+};
+
 const testGoosePlannerAdapter = async (spec) => {
   const restartRequiredKeys = spec?.runtime?.restartRequiredKeys ?? [];
   const result = {
@@ -1245,22 +1557,15 @@ const testGoosePlannerAdapter = async (spec) => {
     return { ...result, message: 'INTERNAL_GOOSE_URL is not configured.' };
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3000);
+  let client;
   try {
-    const health = await fetch(`${internalGooseUrl}/agent/start`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(gooseSecretKey ? { 'X-Secret-Key': gooseSecretKey } : {}),
-      },
-      body: JSON.stringify({ working_dir: gooseWorkingDir }),
-      signal: controller.signal,
-    });
+    client = await createGooseAcpClient({ timeoutMs: 10000 });
+    const session = await client.send('session/new', { cwd: gooseWorkingDir, mcpServers: [] });
+    const sessionId = session?.result?.sessionId;
     return {
       ...result,
-      reachable: health.ok,
-      message: health.ok ? 'Goose accepted a session start request.' : `Goose responded with ${health.status}.`,
+      reachable: Boolean(sessionId),
+      message: sessionId ? 'Goose accepted an ACP session/new request.' : 'Goose ACP session/new did not return a session id.',
     };
   } catch (error) {
     return {
@@ -1268,7 +1573,7 @@ const testGoosePlannerAdapter = async (spec) => {
       message: error instanceof Error ? error.message : 'Failed to reach Goose.',
     };
   } finally {
-    clearTimeout(timeout);
+    await client?.close();
   }
 };
 
@@ -1527,26 +1832,9 @@ const parseGooseSseAnswer = (text) => {
 };
 
 const callGooseChatEndpoint = async ({ modelAlias }, messages, { workingDir = gooseWorkingDir } = {}) => {
-  if (!internalGooseUrl) {
-    throw new Error('INTERNAL_GOOSE_URL is not configured.');
-  }
-
-  const headers = {
-    'Content-Type': 'application/json',
-    Accept: 'text/event-stream',
-    ...(gooseSecretKey ? { 'X-Secret-Key': gooseSecretKey } : {}),
-  };
-  const sessionResponse = await fetch(`${internalGooseUrl}/agent/start`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ working_dir: workingDir }),
-  });
-  const sessionBody = await jsonResponse(sessionResponse);
-  if (!sessionResponse.ok) {
-    throw new Error(sessionBody.error ?? sessionBody.message ?? `Goose agent start failed with ${sessionResponse.status}`);
-  }
-
-  const sessionId = sessionBody.id;
+  const client = await createGooseAcpClient();
+  const session = await client.send('session/new', { cwd: workingDir, mcpServers: [] });
+  const sessionId = session?.result?.sessionId;
   const systemContext = messages
     .filter((message) => message.role === 'system')
     .map((message) => message.content)
@@ -1555,39 +1843,43 @@ const callGooseChatEndpoint = async ({ modelAlias }, messages, { workingDir = go
   const visibleMessages = messages.filter((message) => message.role !== 'system');
   const latestUserMessage = [...visibleMessages].reverse().find((message) => message.role === 'user');
   if (!sessionId || !latestUserMessage) {
+    await client.close();
     throw new Error('Goose agent did not return a session or no user message was provided.');
   }
 
-  const overrideConversation = visibleMessages
+  const priorConversation = visibleMessages
     .filter((message) => message.id !== latestUserMessage.id)
-    .map(gooseMessage);
-  const replyResponse = await fetch(`${internalGooseUrl}/reply`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      session_id: sessionId,
-      user_message: gooseMessage(
-        systemContext
-          ? {
-              ...latestUserMessage,
-              content: `${systemContext}\n\nUser request:\n${latestUserMessage.content}`,
-            }
-          : latestUserMessage,
-      ),
-      override_conversation: overrideConversation,
-    }),
-  });
-  const replyText = await replyResponse.text();
-  if (!replyResponse.ok) {
-    throw new Error(replyText || `Goose reply failed with ${replyResponse.status}`);
-  }
+    .map((message) => `${message.role}: ${message.content}`)
+    .join('\n\n');
 
-  const answer = parseGooseSseAnswer(replyText);
-  if (!answer) {
-    throw new Error(`Goose returned an empty response for ${modelAlias}.`);
+  try {
+    await client.send(
+      'session/prompt',
+      {
+        sessionId,
+        prompt: [
+          {
+            type: 'text',
+            text: [
+              systemContext,
+              priorConversation ? `Prior conversation:\n${priorConversation}` : '',
+              `User request:\n${latestUserMessage.content}`,
+            ]
+              .filter(Boolean)
+              .join('\n\n'),
+          },
+        ],
+      },
+      { sessionId },
+    );
+    const answer = client.getAssistantText();
+    if (!answer) {
+      throw new Error(`Goose returned an empty response for ${modelAlias}.`);
+    }
+    return { answer, sessionId };
+  } finally {
+    await client.close();
   }
-
-  return { answer, sessionId };
 };
 
 const toLlmConfig = async (user, index) => {
@@ -1911,6 +2203,757 @@ app.delete('/api/projects/:id', requireAuth, requireProjectDeletionRole, async (
     } finally {
       client.release();
     }
+  } catch (error) {
+    next(error);
+  }
+});
+
+const requireProjectAccess = async (projectId, request, allowedRoles) => {
+  const db = await requireProjectDb();
+  const client = await db.connect();
+  try {
+    await requireProjectRole(client, projectId, request, allowedRoles);
+    const result = await client.query(
+      `
+        SELECT id, name, description, status, bucket_name, loaded_prefix, parsed_prefix, metadata_object_key, created_by, created_at, updated_at
+        FROM projects
+        WHERE id = $1
+      `,
+      [projectId],
+    );
+    if (result.rowCount === 0) {
+      throw Object.assign(new Error('Project not found.'), { status: 404 });
+    }
+    return toProject(result.rows[0]);
+  } finally {
+    client.release();
+  }
+};
+
+const requireProjectMinio = (project) => {
+  if (!minioClient) {
+    throw Object.assign(new Error('MinIO credentials are not configured on the backend.'), { status: 503 });
+  }
+  if (!project.bucketName) {
+    throw Object.assign(new Error('Project does not have a MinIO bucket configured.'), { status: 400 });
+  }
+  return minioClient;
+};
+
+const loadPaperqaRuntime = async (user) => {
+  const tierIndex = Math.max(0, configuredLlmTiers.indexOf(paperqaLlmTier));
+  const llmConfig = await loadRunnableLlmConfig(user, { id: `openbao-llm-${tierIndex + 1}` });
+  const modelAlias = liteLlmModelAlias(user, tierIndex);
+  if (!paperqaLitellmApiKey?.trim()) {
+    throw Object.assign(
+      new Error(
+        'LITELLM_API_KEY is not configured on the API. Set it in platform runtime env before processing papers.',
+      ),
+      { status: 503 },
+    );
+  }
+  const litellmRuntime = buildPaperqaLitellmRuntime({
+    llmConfig,
+    modelAlias,
+    litellmUrl: paperqaLitellmUrl,
+    tier: llmConfig.tier ?? defaultTier(tierIndex),
+  });
+  return {
+    llmModel: modelAlias,
+    summaryLlmModel: modelAlias,
+    embeddingModel: paperqaEmbeddingModel,
+    litellmUrl: paperqaLitellmUrl,
+    litellmApiKey: paperqaLitellmApiKey,
+    litellmRuntime,
+  };
+};
+
+app.get('/api/projects/:id/files', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectAccess(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const client = requireProjectMinio(project);
+    const files = await listProjectFiles(client, project);
+    log('GET /api/projects/:id/files', { projectId: project.id, count: files.length, bucketName: project.bucketName });
+    logAuditEvent({
+      event: 'project_file.list',
+      actor: userSubject(request),
+      action: 'read',
+      resourceType: 'project_file',
+      resourceId: project.id,
+      outcome: 'success',
+      metadata: { count: files.length, bucketName: project.bucketName },
+    });
+    response.json({ files });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post(
+  '/api/projects/:id/files',
+  requireAuth,
+  projectUpload.array('files'),
+  async (request, response, next) => {
+    try {
+      const uploads = Array.isArray(request.files) ? request.files : [];
+      if (uploads.length === 0) {
+        response.status(400).json({ error: 'At least one PDF file is required.' });
+        return;
+      }
+      const project = await requireProjectAccess(request.params.id, request, ['owner', 'editor']);
+      const client = requireProjectMinio(project);
+      const files = await uploadProjectFiles(client, project, uploads);
+      log('POST /api/projects/:id/files', {
+        projectId: project.id,
+        count: files.length,
+        bucketName: project.bucketName,
+        totalBytes: files.reduce((sum, file) => sum + file.size, 0),
+      });
+      logAuditEvent({
+        event: 'project_file.upload',
+        actor: userSubject(request),
+        action: 'upload',
+        resourceType: 'project_file',
+        resourceId: project.id,
+        outcome: 'success',
+        metadata: { count: files.length, bucketName: project.bucketName },
+      });
+      response.status(201).json({ files });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.post('/api/projects/:id/files/process', requireAuth, async (request, response, next) => {
+  try {
+    const fileIds = Array.isArray(request.body?.fileIds)
+      ? request.body.fileIds.map((value) => String(value))
+      : [];
+    if (fileIds.length === 0) {
+      response.status(400).json({ error: 'Select at least one file to process.' });
+      return;
+    }
+    const project = await requireProjectAccess(request.params.id, request, ['owner', 'editor']);
+    const client = requireProjectMinio(project);
+    const indexed = new Map((await listProjectFiles(client, project)).map((file) => [file.id, file]));
+    const selected = fileIds.map((id) => indexed.get(id)).filter(Boolean);
+    if (selected.length === 0) {
+      response.status(404).json({ error: 'No matching uploaded files were found for this project.' });
+      return;
+    }
+
+    const paperqaRuntime = await loadPaperqaRuntime(request.user);
+    const ingestWiki = request.body?.ingestWiki !== false && paperqaIngestWiki;
+    const wikiStorage = ingestWiki ? wikiStorageForProject(project) : null;
+    const wikiLlmConfig = ingestWiki ? await loadWikiLlmConfig(request.user) : null;
+
+    const repoCatalog = loadAgentRepositories();
+    const userSkills = await readAgentSkills(request.user);
+    const packageSkillIds = new Set(repoCatalog.skills.map((skill) => skill.id));
+    const skillsForBindings = [
+      ...repoCatalog.skills,
+      ...userSkills.filter((skill) => !packageSkillIds.has(skill.id)),
+    ];
+    const skillBindings = await readProjectAgentSkillBindings(request.user, project.id, skillsForBindings);
+    const paperReaderBinding = skillBindings.find(
+      (binding) => binding.skillId === PAPER_READER_SKILL_ID && binding.enabled,
+    );
+    const paperReaderProcessing = await resolvePaperReaderProcessing(paperReaderBinding);
+
+    const job = createProjectProcessJob({
+      projectId: project.id,
+      userId: userSubject(request),
+      fileIds: selected.map((file) => file.id),
+      fileNames: Object.fromEntries(selected.map((file) => [file.id, file.name])),
+    });
+
+    log('POST /api/projects/:id/files/process start', {
+      projectId: project.id,
+      jobId: job.id,
+      fileCount: selected.length,
+      bucketName: project.bucketName,
+      litellmModelAlias: paperqaRuntime.litellmRuntime.modelAlias,
+      litellmUrl: paperqaRuntime.litellmRuntime.litellmUrl,
+      providerModel: paperqaRuntime.litellmRuntime.providerModel,
+      hasLitellmApiKey: Boolean(paperqaRuntime.litellmApiKey),
+    });
+
+    void runProjectFileProcessJob({
+      jobId: job.id,
+      project,
+      client,
+      selected,
+      paperqaRuntime,
+      paperReaderProcessing,
+      ingestWiki,
+      wikiStorage,
+      wikiLlmConfig,
+      callLlmChatEndpoint,
+      extractLlmAnswer,
+      mirrorLog: (event, payload) => log(event, payload),
+    })
+      .then(({ processed, failures, wikiPages }) => {
+        log('POST /api/projects/:id/files/process complete', {
+          projectId: project.id,
+          jobId: job.id,
+          count: processed.length,
+          failureCount: failures.length,
+          wikiPageCount: wikiPages.length,
+          bucketName: project.bucketName,
+        });
+        logAuditEvent({
+          event: 'project_file.process',
+          actor: userSubject(request),
+          action: 'process',
+          resourceType: 'project_file',
+          resourceId: project.id,
+          outcome: failures.length ? 'partial' : 'success',
+          metadata: {
+            jobId: job.id,
+            count: processed.length,
+            failureCount: failures.length,
+            wikiPageCount: wikiPages.length,
+            bucketName: project.bucketName,
+          },
+        });
+      })
+      .catch((error) => {
+        log('POST /api/projects/:id/files/process job error', {
+          projectId: project.id,
+          jobId: job.id,
+          error: error instanceof Error ? error.message : 'Processing failed.',
+        });
+      });
+
+    response.status(202).json({ jobId: job.id, status: 'running' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/projects/:id/files/process/jobs', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectAccess(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const fileId = typeof request.query.fileId === 'string' ? request.query.fileId : undefined;
+    const jobs = listProjectProcessJobs(project.id, { fileId });
+    response.json({ jobs });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/projects/:id/files/process/jobs/:jobId', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectAccess(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const job = getProjectProcessJob(request.params.jobId);
+    if (!job || job.projectId !== project.id) {
+      response.status(404).json({ error: 'Processing job not found.' });
+      return;
+    }
+    if (job.userId !== userSubject(request)) {
+      response.status(403).json({ error: 'You do not have access to this processing job.' });
+      return;
+    }
+    response.json({ job: serializeProjectProcessJob(job) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/projects/:id/files/:fileId/process-log', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectAccess(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const client = requireProjectMinio(project);
+    const files = await listProjectFiles(client, project);
+    const file = files.find((entry) => entry.id === request.params.fileId);
+    if (!file) {
+      response.status(404).json({ error: 'File not found in this project.' });
+      return;
+    }
+
+    const stem = parsedStemFromObjectKey(file.objectKey);
+    const objectKey = processLogObjectKey(project, stem);
+    const logText = await readProcessLogFromStorage(client, project, file);
+    if (logText !== null) {
+      response.json({
+        fileId: file.id,
+        fileName: file.name,
+        log: logText,
+        source: 'minio',
+        objectKey,
+        parsedPrefix: project.parsedPrefix ?? 'parsed',
+      });
+      return;
+    }
+
+    const jobLog = findFileLogFromJobs(project.id, file.id);
+    if (jobLog?.lines?.length) {
+      response.json({
+        fileId: file.id,
+        fileName: file.name,
+        log: jobLog.lines.join('\n'),
+        source: 'job',
+        jobId: jobLog.jobId,
+        jobStatus: jobLog.jobStatus,
+        fileLogStatus: jobLog.status,
+      });
+      return;
+    }
+
+    response.status(404).json({
+      error:
+        'No process log found for this file. If the server restarted or the job crashed before a checkpoint, logs may be lost. Re-run Process to generate a new log.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const requireProjectForWiki = requireProjectAccess;
+
+const wikiStorageForProject = (project) => {
+  if (!minioClient) {
+    throw Object.assign(new Error('MinIO credentials are not configured on the backend.'), { status: 503 });
+  }
+  if (!project?.bucketName) {
+    throw Object.assign(new Error('Project does not have a MinIO bucket configured.'), { status: 400 });
+  }
+  return createWikiStorage({
+    client: minioClient,
+    bucket: project.bucketName,
+    wikiPrefix: wikiBucketPrefix,
+    metadataPrefix: wikiMetadataPrefix,
+  });
+};
+
+const loadWikiLlmConfig = async (user) => {
+  const tier = wikiDefaultTier;
+  const index = configuredLlmTiers.indexOf(tier);
+  const safeIndex = index >= 0 ? index : 0;
+  try {
+    return await loadRunnableLlmConfig(user, { id: `openbao-llm-${safeIndex + 1}` });
+  } catch (error) {
+    log('Wiki LLM tier unavailable; falling back to heuristic synthesis', {
+      tier,
+      detail: error instanceof Error ? error.message : 'Unknown LLM lookup error.',
+    });
+    return null;
+  }
+};
+
+const wikiPageSummary = ({ key, ref, page }) => ({
+  key,
+  category: ref.category,
+  slug: ref.slug,
+  title: page.frontmatter?.title ?? ref.slug,
+  updated: page.frontmatter?.updated ?? null,
+  created: page.frontmatter?.created ?? null,
+  sources: Array.isArray(page.frontmatter?.sources) ? page.frontmatter.sources : [],
+  related: Array.isArray(page.frontmatter?.related) ? page.frontmatter.related : [],
+  confidence: page.frontmatter?.confidence ?? null,
+});
+
+const isValidWikiCategory = (value) => wikiCategories.includes(String(value ?? '').toLowerCase());
+
+app.get('/api/projects/:id/wiki/pages', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const storage = wikiStorageForProject(project);
+    const refs = await storage.listPageRefs();
+    const summaries = [];
+    for (const ref of refs) {
+      const markdown = await storage.readPageMarkdown(ref.category, ref.slug);
+      if (!markdown) {
+        continue;
+      }
+      const page = wikiParsePage(markdown, {
+        fallbackCategory: ref.category,
+        fallbackSlug: ref.slug,
+        fallbackTitle: ref.slug,
+      });
+      summaries.push(wikiPageSummary({ key: storage.pageKey(ref.category, ref.slug), ref, page }));
+    }
+    summaries.sort((a, b) => String(b.updated ?? '').localeCompare(String(a.updated ?? '')));
+    logAuditEvent({
+      event: 'wiki.list',
+      actor: userSubject(request),
+      action: 'read',
+      resourceType: 'wiki_page',
+      resourceId: project.id,
+      outcome: 'success',
+      metadata: { pageCount: summaries.length },
+    });
+    response.json({ pages: summaries, categories: wikiCategories });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/projects/:id/wiki/pages/:category/:slug', requireAuth, async (request, response, next) => {
+  try {
+    const { category, slug } = request.params;
+    if (!isValidWikiCategory(category)) {
+      response.status(400).json({ error: 'Unsupported wiki category.' });
+      return;
+    }
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const storage = wikiStorageForProject(project);
+    const markdown = await storage.readPageMarkdown(category, slug);
+    if (!markdown) {
+      response.status(404).json({ error: 'Wiki page not found.' });
+      return;
+    }
+    const page = wikiParsePage(markdown, {
+      fallbackCategory: category,
+      fallbackSlug: slug,
+      fallbackTitle: slug,
+    });
+    const backlinkIndex = (await storage.readMetadataJson('backlinks.json', { entries: {} }))?.entries ?? {};
+    const provenanceIndex = (await storage.readMetadataJson('provenance.json', { entries: {} }))?.entries ?? {};
+    const pageKey = wikiPageRefKey({ category, slug });
+    logAuditEvent({
+      event: 'wiki.read',
+      actor: userSubject(request),
+      action: 'read',
+      resourceType: 'wiki_page',
+      resourceId: `${project.id}:${pageKey}`,
+      outcome: 'success',
+    });
+    response.json({
+      page: {
+        key: storage.pageKey(category, slug),
+        category: wikiNormalizeCategory(category),
+        slug: wikiSlugifyTitle(slug),
+        frontmatter: page.frontmatter,
+        body: page.body,
+        markdown,
+      },
+      backlinks: backlinkIndex[pageKey] ?? [],
+      provenance: provenanceIndex[pageKey] ?? [],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put('/api/projects/:id/wiki/pages/:category/:slug', requireAuth, async (request, response, next) => {
+  try {
+    const { category, slug } = request.params;
+    if (!isValidWikiCategory(category)) {
+      response.status(400).json({ error: 'Unsupported wiki category.' });
+      return;
+    }
+    const markdown = String(request.body?.markdown ?? '');
+    if (!markdown.trim()) {
+      response.status(400).json({ error: 'Wiki page markdown is required.' });
+      return;
+    }
+    if (Buffer.byteLength(markdown, 'utf8') > wikiMaxPageBytes) {
+      response.status(413).json({ error: `Wiki page exceeds ${wikiMaxPageBytes} bytes.` });
+      return;
+    }
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor']);
+    const storage = wikiStorageForProject(project);
+    const page = wikiParsePage(markdown, {
+      fallbackCategory: category,
+      fallbackSlug: slug,
+      fallbackTitle: slug,
+    });
+    page.frontmatter.updated = new Date().toISOString();
+    if (!page.frontmatter.created) {
+      page.frontmatter.created = page.frontmatter.updated;
+    }
+    page.frontmatter.category = wikiNormalizeCategory(category);
+    page.frontmatter.slug = wikiSlugifyTitle(slug);
+    await storage.writePageMarkdown(category, slug, markdown);
+    logAuditEvent({
+      event: 'wiki.write',
+      actor: userSubject(request),
+      action: 'write',
+      resourceType: 'wiki_page',
+      resourceId: `${project.id}:${wikiPageRefKey({ category, slug })}`,
+      outcome: 'success',
+      metadata: { bytes: Buffer.byteLength(markdown, 'utf8') },
+    });
+    response.json({
+      page: {
+        key: storage.pageKey(category, slug),
+        category: wikiNormalizeCategory(category),
+        slug: wikiSlugifyTitle(slug),
+        frontmatter: page.frontmatter,
+        body: page.body,
+        markdown,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete('/api/projects/:id/wiki/pages/:category/:slug', requireAuth, async (request, response, next) => {
+  try {
+    const { category, slug } = request.params;
+    if (!isValidWikiCategory(category)) {
+      response.status(400).json({ error: 'Unsupported wiki category.' });
+      return;
+    }
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor']);
+    const storage = wikiStorageForProject(project);
+    await storage.deletePage(category, slug);
+    logAuditEvent({
+      event: 'wiki.delete',
+      actor: userSubject(request),
+      action: 'delete',
+      resourceType: 'wiki_page',
+      resourceId: `${project.id}:${wikiPageRefKey({ category, slug })}`,
+      outcome: 'success',
+    });
+    response.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/projects/:id/wiki/sources', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const client = requireProjectMinio(project);
+    const storage = wikiStorageForProject(project);
+    const sources = await listWikiProcessedSources({ client, project, storage });
+    response.json({
+      sources,
+      autoIngestOnProcess: paperqaIngestWiki,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/projects/:id/wiki/sync-processed', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor']);
+    const client = requireProjectMinio(project);
+    const storage = wikiStorageForProject(project);
+    const fileIds = Array.isArray(request.body?.fileIds)
+      ? request.body.fileIds.map((id) => String(id).trim()).filter(Boolean)
+      : undefined;
+    const llmConfig = await loadWikiLlmConfig(request.user);
+    const result = await syncProcessedFilesToWiki({
+      client,
+      project,
+      storage,
+      fileIds,
+      llmConfig,
+      callLlmChatEndpoint: llmConfig ? callLlmChatEndpoint : undefined,
+      extractLlmAnswer: llmConfig ? extractLlmAnswer : undefined,
+      logger: { warn: (message, details) => log(`Wiki sync warning: ${message}`, details ?? {}) },
+    });
+
+    logAuditEvent({
+      event: 'wiki.sync_processed',
+      actor: userSubject(request),
+      action: 'ingest',
+      resourceType: 'project_file',
+      resourceId: project.id,
+      outcome: result.errors.length ? 'partial' : 'success',
+      metadata: {
+        ingested: result.ingested.length,
+        skipped: result.skipped.length,
+        errors: result.errors.length,
+      },
+    });
+
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/projects/:id/wiki/ingest/:fileId', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor']);
+    const client = requireProjectMinio(project);
+    const storage = wikiStorageForProject(project);
+    const files = await listProjectFiles(client, project);
+    const file = files.find((entry) => entry.id === request.params.fileId);
+    if (!file) {
+      response.status(404).json({ error: 'File not found in this project.' });
+      return;
+    }
+    const llmConfig = await loadWikiLlmConfig(request.user);
+    const result = await ingestProcessedFileToWiki({
+      client,
+      project,
+      file,
+      storage,
+      llmConfig,
+      callLlmChatEndpoint: llmConfig ? callLlmChatEndpoint : undefined,
+      extractLlmAnswer: llmConfig ? extractLlmAnswer : undefined,
+      logger: { warn: (message, details) => log(`Wiki ingest warning: ${message}`, details ?? {}) },
+    });
+
+    logAuditEvent({
+      event: 'wiki.ingest_processed',
+      actor: userSubject(request),
+      action: 'ingest',
+      resourceType: 'wiki_page',
+      resourceId: `${project.id}:${result.pageKey}`,
+      outcome: 'success',
+      metadata: { fileId: file.id, sourceId: file.id, fallback: result.suggestion?.fallback },
+    });
+
+    response.json({
+      pageKey: result.pageKey,
+      category: result.category,
+      slug: result.slug,
+      sectionId: result.sectionId,
+      createdStubs: result.createdStubs,
+      suggestion: result.suggestion,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/projects/:id/wiki/ingest', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor']);
+    const storage = wikiStorageForProject(project);
+
+    const sourceId = String(request.body?.sourceId ?? '').trim() || `manual-${randomUUID()}`;
+    const title = String(request.body?.title ?? '').trim() || sourceId;
+    const suggestedCategory = isValidWikiCategory(request.body?.category)
+      ? request.body.category
+      : defaultWikiCategory;
+    const explicitSlug = request.body?.slug ? wikiSlugifyTitle(String(request.body.slug)) : undefined;
+
+    const rawChunks = Array.isArray(request.body?.chunks) ? request.body.chunks : null;
+    const rawText = typeof request.body?.text === 'string' ? request.body.text : '';
+    if (!rawChunks?.length && !rawText.trim()) {
+      response.status(400).json({ error: 'Either chunks[] or text is required for ingest.' });
+      return;
+    }
+    const normalizedChunks = (rawChunks ?? [{ id: 'inline', text: rawText }])
+      .slice(0, wikiMaxChunksPerIngest)
+      .map((chunk, index) => ({
+        id: String(chunk?.id ?? `chunk-${index + 1}`).slice(0, 80),
+        text: String(chunk?.text ?? chunk ?? '').slice(0, 24_000),
+      }))
+      .filter((chunk) => chunk.text.trim());
+
+    if (normalizedChunks.length === 0) {
+      response.status(400).json({ error: 'No usable chunk text was provided.' });
+      return;
+    }
+
+    const llmConfig = await loadWikiLlmConfig(request.user);
+    const result = await wikiIngestDocument({
+      storage,
+      document: {
+        sourceId,
+        title,
+        chunks: normalizedChunks,
+        suggestedCategory,
+        category: suggestedCategory,
+        slug: explicitSlug,
+      },
+      llmConfig,
+      callLlmChatEndpoint: llmConfig ? callLlmChatEndpoint : undefined,
+      extractLlmAnswer: llmConfig ? extractLlmAnswer : undefined,
+      logger: { warn: (message, details) => log(`Wiki ingest warning: ${message}`, details ?? {}) },
+    });
+
+    logAuditEvent({
+      event: 'wiki.ingest',
+      actor: userSubject(request),
+      action: 'ingest',
+      resourceType: 'wiki_page',
+      resourceId: `${project.id}:${result.pageKey}`,
+      outcome: 'success',
+      metadata: {
+        sourceId,
+        chunkCount: normalizedChunks.length,
+        stubsCreated: result.createdStubs.length,
+        llmUsed: Boolean(llmConfig),
+        fallback: result.suggestion.fallback,
+        confidence: result.suggestion.confidence,
+        category: result.category,
+      },
+    });
+
+    response.json({
+      pageKey: result.pageKey,
+      category: result.category,
+      slug: result.slug,
+      sectionId: result.sectionId,
+      createdStubs: result.createdStubs,
+      backlinkCount: result.backlinkCount,
+      pageCount: result.pageCount,
+      llmUsed: Boolean(llmConfig),
+      suggestion: {
+        title: result.suggestion.title,
+        category: result.suggestion.category,
+        summary: result.suggestion.summary,
+        confidence: result.suggestion.confidence,
+        fallback: result.suggestion.fallback,
+        related: result.suggestion.related,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/projects/:id/wiki/query', requireAuth, async (request, response, next) => {
+  try {
+    const question = String(request.body?.question ?? '').trim();
+    if (!question) {
+      response.status(400).json({ error: 'A question is required.' });
+      return;
+    }
+    const limit = Math.min(Math.max(Number.parseInt(request.body?.limit ?? '6', 10) || 6, 1), 12);
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const storage = wikiStorageForProject(project);
+    const llmConfig = await loadWikiLlmConfig(request.user);
+    const result = await wikiQuery({
+      storage,
+      question,
+      limit,
+      llmConfig,
+      callLlmChatEndpoint: llmConfig ? callLlmChatEndpoint : undefined,
+      extractLlmAnswer: llmConfig ? extractLlmAnswer : undefined,
+      logger: { warn: (message, details) => log(`Wiki query warning: ${message}`, details ?? {}) },
+    });
+    logAuditEvent({
+      event: 'wiki.query',
+      actor: userSubject(request),
+      action: 'query',
+      resourceType: 'wiki_page',
+      resourceId: project.id,
+      outcome: 'success',
+      metadata: {
+        questionLength: question.length,
+        citedPageCount: result.citedPages.length,
+        llmUsed: result.llmUsed,
+      },
+    });
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/projects/:id/wiki/backlinks', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectForWiki(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const storage = wikiStorageForProject(project);
+    const backlinks = (await storage.readMetadataJson('backlinks.json', { entries: {} })) ?? { entries: {} };
+    const ingestLog = (await storage.readMetadataJson('ingest_log.json', { entries: [] })) ?? { entries: [] };
+    response.json({
+      backlinks: backlinks.entries ?? {},
+      ingestLog: Array.isArray(ingestLog.entries) ? ingestLog.entries.slice(0, 50) : [],
+    });
   } catch (error) {
     next(error);
   }
@@ -2551,9 +3594,28 @@ app.use((error, _request, response, _next) => {
   });
 });
 
-app.listen(apiPort, apiHost, () => {
-  console.log(`AISSIStaint API proxy listening on http://${apiHost}:${apiPort}`);
-  console.log(`Using Keycloak issuer ${issuer}`);
-  console.log(`Using OpenBao ${openBaoUrl}/${openBaoKvMount}/${openBaoPrefix}`);
-  console.log(`Using LiteLLM proxy ${liteLlmUrl}`);
-});
+const startApiServer = async () => {
+  if (projectDb) {
+    try {
+      await requireProjectDb();
+      log('Project database schema ready');
+    } catch (error) {
+      console.error(
+        'Project database schema initialization failed:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  app.listen(apiPort, apiHost, () => {
+    console.log(`AISSIStaint API proxy listening on http://${apiHost}:${apiPort}`);
+    console.log(`Using Keycloak issuer ${issuer}`);
+    console.log(`Using OpenBao ${openBaoUrl}/${openBaoKvMount}/${openBaoPrefix}`);
+    console.log(`Using LiteLLM proxy ${liteLlmUrl}`);
+    if (appDatabaseUrl) {
+      console.log(`Using app database ${appDatabaseUrl.replace(/:[^:@/]+@/, ':***@')}`);
+    }
+  });
+};
+
+void startApiServer();

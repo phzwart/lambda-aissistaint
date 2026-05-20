@@ -41,6 +41,75 @@ Return the answer with exactly these sections:
 Be faithful to the paper. Distinguish author claims from interpretation. Do not fabricate page numbers, datasets, baselines, metrics, results, or limitations. Do not summarize references that were not read."""
 
 
+DEFAULT_EXTENDED_ABSTRACT_INSTRUCTION = (
+    "Expand the paper's abstract into a richer narrative (~5× the original abstract length). "
+    "Add concrete detail on methods, materials, key results, and caveats drawn only from the paper. "
+    "Do not invent facts, citations, or page numbers."
+)
+
+DEFAULT_FOLLOW_UP_QUESTIONS_INSTRUCTION = (
+    'Generate exactly 5 in-depth follow-up questions and 5 breadth questions grounded in the paper. '
+    'Return JSON only: {"depth": ["..."], "breadth": ["..."]} with five strings in each array.'
+)
+
+
+def build_extended_abstract_question(
+    *,
+    instruction: str,
+    abstract_text: str,
+    target_char_count: int,
+    citation_label: str,
+) -> str:
+    user_instruction = (instruction or DEFAULT_EXTENDED_ABSTRACT_INSTRUCTION).strip()
+    abstract_body = abstract_text.strip() or "Not available."
+    return f"""{user_instruction}
+
+## Original abstract (verbatim from paper)
+
+{abstract_body}
+
+## Requirements
+
+- Target length: approximately {target_char_count} characters (~5× the original abstract).
+- Cite evidence using the document name `{citation_label}.pdf` with page references when available.
+- Ground every statement in the paper; do not fabricate results or citations.
+- Write plain Markdown prose (no JSON).
+"""
+
+
+def build_follow_up_questions_question(
+    *,
+    instruction: str,
+    summary_markdown: str,
+    abstract_text: str,
+    extended_abstract: str,
+    metadata: dict[str, Any],
+) -> str:
+    user_instruction = (instruction or DEFAULT_FOLLOW_UP_QUESTIONS_INSTRUCTION).strip()
+    title = metadata.get("title") or "Not available"
+    return f"""{user_instruction}
+
+Return JSON only with keys "depth" and "breadth", each an array of exactly five question strings.
+
+## Paper metadata
+
+- Title: {title}
+- Authors: {", ".join(metadata.get("authors") or []) or "Not available"}
+
+## Original abstract
+
+{abstract_text.strip() or "Not available."}
+
+## Extended abstract
+
+{extended_abstract.strip() or "Not available."}
+
+## Structured summary
+
+{summary_markdown.strip() or "Not available."}
+"""
+
+
 @dataclass
 class ExtractionResult:
     source_path: str

@@ -17,8 +17,10 @@ import type {
   PlannerModelAlias,
   PlannerSpec,
   Project,
+  PaperReaderProcessingConfig,
   ProjectAgentSkillBinding,
 } from '../types/domain';
+import { PAPER_READER_SKILL_ID, paperReaderDefaultProcessingConfig } from '../constants/paperReaderDefaults';
 
 const tierLabels: Record<LlmTier, string> = {
   a: 'A',
@@ -65,6 +67,14 @@ const createBinding = (skill: AgentSkill, index: number): ProjectAgentSkillBindi
   enabled: false,
   priority: index + 1,
   notes: '',
+  ...(skill.id === PAPER_READER_SKILL_ID
+    ? { processingConfig: { ...paperReaderDefaultProcessingConfig } }
+    : {}),
+});
+
+const paperReaderConfigForBinding = (binding: ProjectAgentSkillBinding): PaperReaderProcessingConfig => ({
+  ...paperReaderDefaultProcessingConfig,
+  ...binding.processingConfig,
 });
 
 const createPlannerConfig = (spec?: PlannerSpec, aliases: PlannerModelAlias[] = []): PlannerConfig => {
@@ -186,7 +196,6 @@ export function PreferencesPage() {
   const [executorCatalog, setExecutorCatalog] = useState<AgentExecutorCatalogItem[]>([]);
   const [projectSkillBindings, setProjectSkillBindings] = useState<ProjectAgentSkillBinding[]>([]);
   const [isLoadingAgentSkills, setIsLoadingAgentSkills] = useState(false);
-  const [isSavingAgentSkill, setIsSavingAgentSkill] = useState(false);
   const [isSavingSkillBindings, setIsSavingSkillBindings] = useState(false);
   const [plannerSpecs, setPlannerSpecs] = useState<PlannerSpec[]>([]);
   const [plannerModelAliases, setPlannerModelAliases] = useState<PlannerModelAlias[]>([]);
@@ -528,124 +537,32 @@ export function PreferencesPage() {
     setSkillDraft(skill);
   };
 
-  const createSkill = () => {
-    const skill = createEmptyAgentSkill();
-    setAgentSkills((current) => [skill, ...current]);
-    setProjectSkillBindings((current) => [createBinding(skill, 0), ...current.map((binding) => ({ ...binding, priority: binding.priority + 1 }))]);
-    selectSkill(skill);
+  const updateSkillDraft = (_patch: Partial<AgentSkill>) => {
+    // Skill Setup is a catalog/injection screen. Authoring happens outside this view.
   };
 
-  const updateSkillDraft = (patch: Partial<AgentSkill>) => {
-    setSkillDraft((current) => ({
-      ...current,
-      ...patch,
-    }));
+  const updateSkillExecutable = (_patch: Partial<AgentSkillExecutable>) => {
+    // Skill Setup is a catalog/injection screen. Authoring happens outside this view.
   };
 
-  const updateSkillExecutable = (patch: Partial<AgentSkillExecutable>) => {
-    setSkillDraft((current) => ({
-      ...current,
-      executable: {
-        ...current.executable,
-        ...patch,
-      },
-    }));
-  };
-
-  const saveSkill = async () => {
-    if (isRepositorySkill(skillDraft)) {
-      setBanner({ severity: 'error', message: 'Repository skills are read-only. Duplicate the skill before editing it.' });
-      return;
-    }
-
-    setIsSavingAgentSkill(true);
-    try {
-      const saved = await agentSkillService.save(skillDraft);
-      setAgentSkills((current) =>
-        current.some((skill) => skill.id === saved.id)
-          ? current.map((skill) => (skill.id === saved.id ? saved : skill))
-          : [saved, ...current],
-      );
-      setSkillDraft(saved);
-      setActiveSkillId(saved.id);
-      setProjectSkillBindings((current) =>
-        current.some((binding) => binding.skillId === saved.id) ? current : [createBinding(saved, current.length), ...current],
-      );
-      setBanner({ severity: 'success', message: `Skill "${saved.name || 'Untitled skill'}" saved.` });
-      addActivity(`Saved agent skill "${saved.name || saved.id}".`, 'success');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to save agent skill.';
-      setBanner({ severity: 'error', message });
-      addActivity(message, 'error');
-    } finally {
-      setIsSavingAgentSkill(false);
-    }
-  };
-
-  const duplicateSkill = async () => {
-    if (!isRepositorySkill(skillDraft)) {
-      return;
-    }
-
-    setIsSavingAgentSkill(true);
-    try {
-      const now = new Date().toISOString();
-      const copy: AgentSkill = {
-        ...skillDraft,
-        id: crypto.randomUUID(),
-        name: `${skillDraft.name || 'Repository skill'} Copy`,
-        status: 'draft',
-        source: 'user',
-        editable: true,
-        origin: undefined,
-        createdAt: now,
-        updatedAt: now,
-      };
-      const saved = await agentSkillService.save(copy);
-      setAgentSkills((current) => [saved, ...current]);
-      setProjectSkillBindings((current) => [createBinding(saved, current.length), ...current]);
-      selectSkill(saved);
-      setBanner({ severity: 'success', message: `Duplicated "${skillDraft.name || 'repository skill'}" into My Skills.` });
-      addActivity(`Duplicated repository skill "${skillDraft.name || skillDraft.id}".`, 'success');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to duplicate repository skill.';
-      setBanner({ severity: 'error', message });
-      addActivity(message, 'error');
-    } finally {
-      setIsSavingAgentSkill(false);
-    }
-  };
-
-  const deleteSkill = async () => {
-    if (!skillDraft.id) {
-      return;
-    }
-    if (isRepositorySkill(skillDraft)) {
-      setBanner({ severity: 'error', message: 'Repository skills are read-only and cannot be deleted.' });
-      return;
-    }
-    const confirmed = window.confirm(`Delete skill "${skillDraft.name || skillDraft.id}"?`);
-    if (!confirmed) {
-      return;
-    }
-
-    setIsSavingAgentSkill(true);
-    try {
-      await agentSkillService.delete(skillDraft.id);
-      const remaining = agentSkills.filter((skill) => skill.id !== skillDraft.id);
-      setAgentSkills(remaining);
-      setProjectSkillBindings((current) => current.filter((binding) => binding.skillId !== skillDraft.id));
-      const nextSkill = remaining[0] ?? createEmptyAgentSkill();
-      selectSkill(nextSkill);
-      setBanner({ severity: 'info', message: 'Agent skill deleted.' });
-      addActivity('Deleted agent skill.', 'success');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to delete agent skill.';
-      setBanner({ severity: 'error', message });
-      addActivity(message, 'error');
-    } finally {
-      setIsSavingAgentSkill(false);
-    }
+  const updatePaperReaderProcessing = (
+    skillId: string,
+    patch: Partial<PaperReaderProcessingConfig>,
+  ) => {
+    setProjectSkillBindings((current) =>
+      current.map((binding) => {
+        if (binding.skillId !== skillId) {
+          return binding;
+        }
+        return {
+          ...binding,
+          processingConfig: {
+            ...paperReaderConfigForBinding(binding),
+            ...patch,
+          },
+        };
+      }),
+    );
   };
 
   const updateProjectSkillBinding = (skillId: string, patch: Partial<ProjectAgentSkillBinding>) => {
@@ -661,15 +578,15 @@ export function PreferencesPage() {
     );
   };
 
+  const repositorySkills = agentSkills.filter(isRepositorySkill);
+  const userSkills = agentSkills.filter((skill) => !isRepositorySkill(skill));
+  const activeSkillIsRepositorySkill = true;
   const skillPackagePreview = skillDraft.skillPackage?.skillMd
     ? skillDraft.skillPackage
     : {
         ...buildSkillMarkdownPreview(skillDraft),
         files: [],
       };
-  const repositorySkills = agentSkills.filter(isRepositorySkill);
-  const userSkills = agentSkills.filter((skill) => !isRepositorySkill(skill));
-  const activeSkillIsRepositorySkill = isRepositorySkill(skillDraft);
 
   const saveProjectSkillBindings = async () => {
     if (!activeProject) {
@@ -1135,14 +1052,15 @@ export function PreferencesPage() {
           <section style={cardStyle}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
               <div>
-                <h2 style={{ margin: 0 }}>Agent Skill Library</h2>
+                <h2 style={{ margin: 0 }}>Skill Catalog</h2>
                 <p style={{ margin: '6px 0 0', color: '#667085' }}>
-                  Create reusable skills with standard headings, then enable the right set for each active project.
+                  View available skills and choose which ones are injected into the active project.
                 </p>
               </div>
-              <button type="button" onClick={createSkill} style={primaryButtonStyle}>
-                Add Skill
-              </button>
+              <div style={{ ...readOnlyFieldStyle, minWidth: 220 }}>
+                <span style={readOnlyLabelStyle}>Mode</span>
+                <strong>View and inject only</strong>
+              </div>
             </div>
 
             <h3 style={sectionHeadingStyle}>Repository Skills</h3>
@@ -1178,7 +1096,7 @@ export function PreferencesPage() {
               {agentSkills.length === 0 && !isLoadingAgentSkills ? (
                 <div style={{ ...readOnlyFieldStyle, gridColumn: '1 / -1' }}>
                   <span style={readOnlyLabelStyle}>No skills yet</span>
-                  <strong>Add a skill to start building the agent library.</strong>
+                  <strong>No user-authored skills are available yet.</strong>
                 </div>
               ) : (
                 userSkills.map((skill) => (
@@ -1202,7 +1120,7 @@ export function PreferencesPage() {
               {userSkills.length === 0 && agentSkills.length > 0 && !isLoadingAgentSkills && (
                 <div style={{ ...readOnlyFieldStyle, gridColumn: '1 / -1' }}>
                   <span style={readOnlyLabelStyle}>No personal skills yet</span>
-                  <strong>Add a skill or duplicate a repository skill to customize it.</strong>
+                  <strong>User-authored skills will appear here when they are added outside this setup screen.</strong>
                 </div>
               )}
             </section>
@@ -1211,32 +1129,42 @@ export function PreferencesPage() {
           <section style={cardStyle}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
               <div>
-                <h2 style={{ margin: 0 }}>Skill Editor</h2>
+                <h2 style={{ margin: 0 }}>Skill Details</h2>
                 <p style={{ margin: '6px 0 0', color: '#667085' }}>
-                  {activeSkillIsRepositorySkill
-                    ? 'Repository skills are read-only. Duplicate one to customize it.'
-                    : 'Fill in the headings agents need for consistent prompt injection.'}
+                  Review the selected skill. This screen does not author, edit, duplicate, or delete skill definitions.
                 </p>
               </div>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}>
-                {activeSkillIsRepositorySkill ? (
-                  <button type="button" onClick={() => void duplicateSkill()} disabled={isSavingAgentSkill} style={primaryButtonStyle}>
-                    {isSavingAgentSkill ? 'Duplicating...' : 'Duplicate to My Skills'}
-                  </button>
-                ) : (
-                  <>
-                    <button type="button" onClick={saveSkill} disabled={isSavingAgentSkill} style={primaryButtonStyle}>
-                      {isSavingAgentSkill ? 'Saving...' : 'Save Skill'}
-                    </button>
-                    <button type="button" onClick={deleteSkill} disabled={isSavingAgentSkill || userSkills.length === 0} style={dangerButtonStyle}>
-                      Delete
-                    </button>
-                  </>
-                )}
+              <div style={{ ...readOnlyFieldStyle, minWidth: 220 }}>
+                <span style={readOnlyLabelStyle}>Definition</span>
+                <strong>Read-only</strong>
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
+            <div style={metadataGridStyle}>
+              <MetadataItem label="Skill id" value={skillDraft.id || 'None selected'} />
+              <MetadataItem label="Category" value={skillDraft.category || 'General'} />
+              <MetadataItem label="Status" value={skillDraft.status || 'draft'} />
+              <MetadataItem label="Source" value={isRepositorySkill(skillDraft) ? 'Repository' : 'User'} />
+              <MetadataItem label="Capabilities" value={skillDraft.capabilities?.length ? skillDraft.capabilities.join(', ') : 'None'} />
+              <MetadataItem label="Executor" value={skillDraft.executable.catalogId || skillDraft.executable.mode} />
+            </div>
+
+            <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
+              <div style={readOnlyFieldStyle}>
+                <span style={readOnlyLabelStyle}>Purpose</span>
+                <strong>{skillDraft.purpose || skillDraft.description || 'No purpose declared.'}</strong>
+              </div>
+              <div style={readOnlyFieldStyle}>
+                <span style={readOnlyLabelStyle}>When To Use</span>
+                <strong>{skillDraft.whenToUse || 'No usage guidance declared.'}</strong>
+              </div>
+              <div style={readOnlyFieldStyle}>
+                <span style={readOnlyLabelStyle}>Expected Output</span>
+                <strong>{skillDraft.expectedOutput || 'No expected output declared.'}</strong>
+              </div>
+            </div>
+
+            <div style={{ display: 'none' }}>
               <label style={{ ...fieldStyle, gridColumn: 'span 6' }}>
                 Name
                 <input
@@ -1342,7 +1270,7 @@ export function PreferencesPage() {
             </div>
           </section>
 
-          <section style={cardStyle}>
+          <section style={{ ...cardStyle, display: 'none' }}>
             <h2 style={{ margin: '0 0 14px' }}>Executable</h2>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 16 }}>
               <label style={{ ...fieldStyle, gridColumn: 'span 4' }}>
@@ -1479,7 +1407,7 @@ export function PreferencesPage() {
             </div>
           </section>
 
-          <section style={cardStyle}>
+          <section style={{ ...cardStyle, display: 'none' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
               <div>
                 <h2 style={{ margin: 0 }}>Generated Skill Package</h2>
@@ -1520,30 +1448,67 @@ export function PreferencesPage() {
               ) : (
                 agentSkills.map((skill, index) => {
                   const binding = projectSkillBindings.find((item) => item.skillId === skill.id) ?? createBinding(skill, index);
+                  const isPaperReader = skill.id === PAPER_READER_SKILL_ID;
+                  const paperConfig = isPaperReader ? paperReaderConfigForBinding(binding) : null;
                   return (
-                    <div key={skill.id} style={projectSkillBindingStyle}>
-                      <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontWeight: 700 }}>
+                    <div key={skill.id} style={{ display: 'grid', gap: 10 }}>
+                      <div style={projectSkillBindingStyle}>
+                        <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontWeight: 700 }}>
+                          <input
+                            type="checkbox"
+                            checked={binding.enabled}
+                            onChange={(event) => updateProjectSkillBinding(skill.id, { enabled: event.target.checked })}
+                          />
+                          {skill.name || 'Untitled skill'}
+                        </label>
                         <input
-                          type="checkbox"
-                          checked={binding.enabled}
-                          onChange={(event) => updateProjectSkillBinding(skill.id, { enabled: event.target.checked })}
+                          type="number"
+                          min={1}
+                          value={binding.priority}
+                          onChange={(event) => updateProjectSkillBinding(skill.id, { priority: Number(event.target.value) })}
+                          style={{ ...inputStyle, maxWidth: 110 }}
+                          aria-label={`${skill.name || skill.id} priority`}
                         />
-                        {skill.name || 'Untitled skill'}
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        value={binding.priority}
-                        onChange={(event) => updateProjectSkillBinding(skill.id, { priority: Number(event.target.value) })}
-                        style={{ ...inputStyle, maxWidth: 110 }}
-                        aria-label={`${skill.name || skill.id} priority`}
-                      />
-                      <input
-                        value={binding.notes ?? ''}
-                        onChange={(event) => updateProjectSkillBinding(skill.id, { notes: event.target.value })}
-                        placeholder="Project-specific note"
-                        style={inputStyle}
-                      />
+                        <input
+                          value={binding.notes ?? ''}
+                          onChange={(event) => updateProjectSkillBinding(skill.id, { notes: event.target.value })}
+                          placeholder="Project-specific note"
+                          style={inputStyle}
+                        />
+                      </div>
+                      {isPaperReader && binding.enabled && paperConfig ? (
+                        <div style={{ ...cardStyle, padding: 16, marginLeft: 28 }}>
+                          <p style={{ margin: '0 0 12px', color: '#667085', fontSize: 14 }}>
+                            Instructions passed to the Paper Reader Summary runner when processing PDFs in this project.
+                          </p>
+                          <label style={{ ...fieldStyle, display: 'block', marginBottom: 12 }}>
+                            Extended abstract instruction
+                            <textarea
+                              value={paperConfig.extendedAbstractInstruction ?? ''}
+                              onChange={(event) =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  extendedAbstractInstruction: event.target.value,
+                                })
+                              }
+                              rows={4}
+                              style={textareaStyle}
+                            />
+                          </label>
+                          <label style={{ ...fieldStyle, display: 'block' }}>
+                            Follow-up questions instruction
+                            <textarea
+                              value={paperConfig.followUpQuestionsInstruction ?? ''}
+                              onChange={(event) =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  followUpQuestionsInstruction: event.target.value,
+                                })
+                              }
+                              rows={4}
+                              style={textareaStyle}
+                            />
+                          </label>
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })

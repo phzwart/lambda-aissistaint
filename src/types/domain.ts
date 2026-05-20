@@ -38,6 +38,7 @@ export interface ManagedFile {
   size: number;
   uploadedAt: string;
   status: FileProcessingStatus;
+  objectKey?: string;
 }
 
 export interface KnowledgeDocument {
@@ -125,11 +126,19 @@ export interface AgentSkill {
   updatedAt: string;
 }
 
+export interface PaperReaderProcessingConfig {
+  extendedAbstractInstruction?: string;
+  followUpQuestionsInstruction?: string;
+  extendedAbstractEnabled?: boolean;
+  followUpQuestionsEnabled?: boolean;
+}
+
 export interface ProjectAgentSkillBinding {
   skillId: string;
   enabled: boolean;
   priority: number;
   notes?: string;
+  processingConfig?: PaperReaderProcessingConfig;
 }
 
 export interface AgentExecutorCatalogItem {
@@ -220,6 +229,122 @@ export interface PlannerConfigResponse {
   spec: PlannerSpec | null;
   modelAliases: PlannerModelAlias[];
   warnings: { directory: string; message: string }[];
+}
+
+export type WikiCategory = 'entities' | 'concepts' | 'projects' | 'protocols' | 'datasets' | 'people';
+
+export interface WikiPageSummary {
+  key: string;
+  category: WikiCategory;
+  slug: string;
+  title: string;
+  updated: string | null;
+  created: string | null;
+  sources: string[];
+  related: string[];
+  confidence: number | null;
+}
+
+export interface WikiPageDetail {
+  key: string;
+  category: WikiCategory;
+  slug: string;
+  frontmatter: Record<string, unknown>;
+  body: string;
+  markdown: string;
+}
+
+export interface WikiBacklink {
+  from: string;
+  label: string;
+  count: number;
+}
+
+export interface WikiProvenanceEntry {
+  sectionId: string;
+  sourceId: string;
+  sourceTitle: string | null;
+  chunkIds: string[];
+  confidence: number | null;
+  recordedAt: string;
+}
+
+export interface WikiPageResponse {
+  page: WikiPageDetail;
+  backlinks: WikiBacklink[];
+  provenance: WikiProvenanceEntry[];
+}
+
+export interface WikiProcessedSource {
+  fileId: string;
+  fileName: string;
+  objectKey: string;
+  status: FileProcessingStatus;
+  hasSummary: boolean;
+  wikiPageKey: string | null;
+  wikiIngestedAt: string | null;
+}
+
+export interface WikiSyncProcessedResponse {
+  ingested: Array<{ fileId: string; fileName: string; pageKey: string; fallback: boolean }>;
+  skipped: Array<{ fileId: string; fileName: string; reason: string; pageKey?: string }>;
+  errors: Array<{ fileId: string; fileName: string; error: string }>;
+}
+
+export interface WikiIngestRequest {
+  sourceId?: string;
+  title: string;
+  text?: string;
+  chunks?: { id?: string; text: string }[];
+  category?: WikiCategory;
+  slug?: string;
+}
+
+export interface WikiIngestResponse {
+  pageKey: string;
+  category: WikiCategory;
+  slug: string;
+  sectionId: string;
+  createdStubs: { category: WikiCategory; slug: string; title: string }[];
+  backlinkCount: number;
+  pageCount: number;
+  llmUsed: boolean;
+  suggestion: {
+    title: string;
+    category: WikiCategory;
+    summary: string;
+    confidence: number | null;
+    fallback: boolean;
+    related: { category: WikiCategory; title: string }[];
+  };
+}
+
+export interface WikiQueryCitedPage {
+  key: string;
+  category: WikiCategory;
+  slug: string;
+  title: string;
+  score: number;
+  sources: string[];
+}
+
+export interface WikiQueryResponse {
+  answer: string;
+  citedPages: WikiQueryCitedPage[];
+  llmUsed: boolean;
+}
+
+export interface WikiBacklinksResponse {
+  backlinks: Record<string, WikiBacklink[]>;
+  ingestLog: {
+    at: string;
+    sourceId: string;
+    sourceTitle: string | null;
+    affectedPages: string[];
+    action: string;
+    confidence: number | null;
+    notes: string | null;
+  }[];
 }
 
 export interface Project {

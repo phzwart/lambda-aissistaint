@@ -24,6 +24,12 @@ const navigationItems = [
     icon: <KnowledgeIcon />,
   },
   {
+    label: 'Wiki',
+    path: '/wiki',
+    description: 'Persistent synthesized memory',
+    icon: <WikiIcon />,
+  },
+  {
     label: 'Q&A',
     path: '/qa',
     description: 'Ask grounded questions',
@@ -226,6 +232,21 @@ function KnowledgeIcon() {
       <circle cx="22" cy="10" r="3" stroke="currentColor" strokeWidth="2.2" />
       <circle cx="15" cy="22" r="3" stroke="currentColor" strokeWidth="2.2" />
       <path d="m10.5 11 2.8 7M19.5 12.5 16.8 19M11 9.2l8 .6" stroke="currentColor" strokeWidth="2.2" />
+    </IconSvg>
+  );
+}
+
+function WikiIcon() {
+  return (
+    <IconSvg>
+      <path
+        d="M7 5h13a2 2 0 0 1 2 2v17a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V5Z"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinejoin="round"
+      />
+      <path d="M7 5a2 2 0 1 0 0 4h13" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      <path d="M11 13h8M11 17h6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
     </IconSvg>
   );
 }

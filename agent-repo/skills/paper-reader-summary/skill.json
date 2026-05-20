@@ -5,7 +5,8 @@
   "description": "Use when asked to read or summarize a single paper, PDF, or article and extract its question, methods, data, findings, contributions, limitations, and evidence anchors.",
   "version": "0.1.0",
   "status": "enabled",
-  "capabilities": ["paper-reading", "pdf-extraction", "structured-summary", "grounded-summary"],
+  "capabilities": ["paper-reading", "pdf-extraction", "structured-summary", "grounded-summary", "abstract-expansion", "follow-up-questions"],
+  "processingDefaultsPath": "defaults.json",
   "entrypoint": "SKILL.md",
   "executor": {
     "mode": "catalog",

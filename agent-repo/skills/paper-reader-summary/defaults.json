@@ -1,0 +1,4 @@
+{
+  "extendedAbstractInstruction": "Expand the paper's abstract into a richer narrative (~5× the original abstract length). Add concrete detail on methods, materials, key results, and caveats drawn only from the paper. Do not invent facts, citations, or page numbers. Use plain language suitable for an expert reader.",
+  "followUpQuestionsInstruction": "Generate exactly 5 in-depth follow-up questions (mechanisms, implications, limitations, validation) and 5 breadth questions (adjacent fields, comparisons, applications, methodology transfers). Ground every question in the paper content. Return JSON only: {\"depth\": [\"...\"], \"breadth\": [\"...\"]} with five strings in each array."
+}

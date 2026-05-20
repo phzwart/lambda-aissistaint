@@ -50,6 +50,12 @@ AIssistAInt audit events are structured, non-secret operational records. They ar
 | `planner_config.save` | User saves global or project planner setup | Provider keys, raw planner prompt bodies |
 | `planner_config.test` | User validates planner setup against model aliases and the planner engine | Provider keys, prompt bodies, Goose secret key |
 | `planner_skill_catalog.materialize` | API writes planner-visible skill stubs/catalog into the Goose project workspace | Skill bodies, generated file contents, local filesystem details beyond counts and project id |
+| `wiki.list` | API lists wiki page summaries for a project | Full page bodies, secrets |
+| `wiki.read` | API returns the markdown body of a wiki page | Page body excerpts (log only key + project id) |
+| `wiki.write` | API replaces the markdown body of a wiki page | Page body content, manual edits |
+| `wiki.delete` | API removes a wiki page from the project bucket | Page body content |
+| `wiki.ingest` | API synthesizes/updates a wiki page from supplied document chunks | Chunk text, full suggestion body, provider keys |
+| `wiki.query` | API answers a question grounded in wiki pages | Question text, full answer body, page bodies |
 | `broker.auth_denied` | Broker rejects a bearer token | Presented token |
 
 ## Retention And Review

@@ -8,6 +8,7 @@ import { KnowledgeBasePage } from './pages/KnowledgeBasePage';
 import { LoginPage } from './pages/LoginPage';
 import { PreferencesPage } from './pages/PreferencesPage';
 import { QAPage } from './pages/QAPage';
+import { WikiPage } from './pages/WikiPage';
 import { useAuthStore } from './state/authStore';
 
 export function App() {
@@ -32,6 +33,7 @@ export function App() {
           <Route path="/preferences" element={<PreferencesPage />} />
           <Route path="/files" element={<FileManagementPage />} />
           <Route path="/knowledge" element={<KnowledgeBasePage />} />
+          <Route path="/wiki" element={<WikiPage />} />
           <Route path="/qa" element={<QAPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/preferences" replace />} />

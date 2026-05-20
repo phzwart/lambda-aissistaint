@@ -142,6 +142,28 @@ Leave `PLANNER_REPO_DIRECTORIES` blank to load planners from `./agent-repo`, or 
 
 Planner mode applies Skill Setup visibility policy before exposing skills to Goose. The planner output is parsed as JSON and checked against the visible skill catalog before it can be handed to a future execution broker.
 
+## Persistent Wiki
+
+The Wiki page in the app maintains a per-project, Markdown-based memory layer inspired by Karpathy's persistent LLM wiki concept. Pages live as plain `.md` files inside the existing per-project MinIO bucket under the `wiki/` prefix, with rebuildable JSON sidecars (`backlinks.json`, `provenance.json`, `ingest_log.json`) under `metadata/`. The wiki augments rather than replaces the existing document store and Q&A flow.
+
+Pages are organized into a small enumerated set of categories — `entities`, `concepts`, `projects`, `protocols`, `datasets`, `people` — and cross-link with `[[Wiki Link]]` syntax. Frontmatter (`title`, `slug`, `category`, `sources`, `related`, `confidence`, `updated`, `verified_at`) is human-readable; everything else is normal Markdown.
+
+The ingest endpoint compiles a source document into an additive section under a managed marker (`<!-- aissistaint:section start=... -->`), so re-ingesting the same source replaces just that section and leaves any hand-edited prose between markers intact. When the configured LiteLLM tier (`WIKI_LLM_TIER`, default `a`) is unavailable, ingest falls back to a deterministic heuristic extractor so the wiki layer remains inspectable without an LLM. The query endpoint ranks pages by token overlap and asks the LLM to answer only from those pages, citing page titles.
+
+Wiki routes are mounted under each project's authenticated namespace:
+
+- `GET    /api/projects/:id/wiki/pages`
+- `GET    /api/projects/:id/wiki/pages/:category/:slug`
+- `PUT    /api/projects/:id/wiki/pages/:category/:slug`
+- `DELETE /api/projects/:id/wiki/pages/:category/:slug`
+- `POST   /api/projects/:id/wiki/ingest`
+- `POST   /api/projects/:id/wiki/query`
+- `GET    /api/projects/:id/wiki/backlinks`
+
+All wiki routes reuse the existing Keycloak/OpenBao/MinIO/LiteLLM plumbing — no additional services or schemas are introduced. New audit events (`wiki.list`, `wiki.read`, `wiki.write`, `wiki.delete`, `wiki.ingest`, `wiki.query`) follow the same non-secret schema documented in `docs/ai-governance/AUDIT_EVENTS.md`.
+
+File Management **Process** runs the packaged PaperQA2 container (`podman_services/build_paperqa2_runner.sh`), streams `process.log` into the project's parsing prefix (`PROJECT_PARSED_PREFIX`, default `parsed/<file-stem>/`), then writes `extracted.txt` and `summary.md` beside it in the same folder, and (by default) ingests the summary into the wiki. Configure `PAPERQA_LITELLM_URL`, `LITELLM_API_KEY`, and a working `LLM_A` alias before processing. Set `PAPERQA_LITELLM_TIMEOUT_S=600` (or higher) if LiteLLM calls time out during summarization; rebuild the PaperQA image after changing runner Python, then run `npm run test:paperqa:container` to smoke-test the image. For a full pipeline check without external LLMs, run `npm run mock-llm` in one terminal and `npm run test:paperqa:e2e` in another (uses `server/mockLlmServer.mjs`). Set `PAPERQA_PROCESS_INGEST_WIKI=false` to skip wiki ingest.
+
 ## User Flow
 
 Users should:

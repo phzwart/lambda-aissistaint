@@ -20,7 +20,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--llm-model", required=True, help="LiteLLM alias selected by the host setup for final answers.")
     parser.add_argument("--summary-llm-model", required=True, help="LiteLLM alias selected by the host setup for PaperQA2 evidence summaries.")
     parser.add_argument("--embedding-model", required=True, help="Embedding model selected by the host setup/runtime policy.")
+    parser.add_argument(
+        "--litellm-url",
+        default="",
+        help="LiteLLM proxy base URL from AIssistAInt Preferences/runtime (same as INTERNAL_LITELLM_URL).",
+    )
+    parser.add_argument(
+        "--litellm-runtime",
+        default="",
+        help="Path to litellm-runtime.json written by the API with modelAlias and provider metadata.",
+    )
     parser.add_argument("--pqa-home", default="/workspace/.pqa", help="PaperQA2 cache/index home inside the container workspace.")
+    parser.add_argument(
+        "--runtime-config",
+        default="",
+        help="Path to skill-runtime.json with fileId, citationLabel, and processing instructions.",
+    )
+    parser.add_argument("--paper-id", default="", help="Stable file id from the host (also read from runtime-config).")
+    parser.add_argument("--citation-label", default="", help="Upload stem used in PaperQA citations (also read from runtime-config).")
     return parser.parse_args(argv)
 
 
@@ -30,7 +47,16 @@ def main(argv: list[str] | None = None) -> int:
         from .paperqa_settings import RuntimeSettings
 
         runtime = RuntimeSettings.from_args(args)
-        outputs = asyncio.run(run_paperqa_summary(Path(args.input), Path(args.output), runtime))
+        outputs = asyncio.run(
+            run_paperqa_summary(
+                Path(args.input),
+                Path(args.output),
+                runtime,
+                skill_runtime_path=getattr(args, "runtime_config", None) or None,
+                paper_id=str(getattr(args, "paper_id", "") or ""),
+                citation_label=str(getattr(args, "citation_label", "") or ""),
+            )
+        )
     except (PaperQAExecutionError, SettingsError) as error:
         print(f"paper-reader-summary: {error}", file=sys.stderr)
         return 1
