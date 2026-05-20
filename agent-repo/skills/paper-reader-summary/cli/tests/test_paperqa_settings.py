@@ -10,9 +10,12 @@ from unittest import mock
 from paper_reader_summary.paperqa_settings import (
     RuntimeSettings,
     SettingsError,
+    _build_answer_settings,
+    _build_prompt_settings,
     _litellm_config,
     _litellm_params,
     _litellm_proxy_model,
+    build_paperqa_settings,
 )
 
 
@@ -87,6 +90,35 @@ class LitellmTimeoutTests(unittest.TestCase):
             self.assertEqual(os.environ.get("PAPERQA_LITELLM_TIMEOUT_S"), "600")
             self.assertEqual(os.environ.get("LITELLM_REQUEST_TIMEOUT"), "600")
             self.assertEqual(os.environ.get("OPENAI_TIMEOUT"), "600")
+
+
+class PaperQASettingsTests(unittest.TestCase):
+    def test_build_paperqa_settings_tunes_evidence_for_structured_summary(self) -> None:
+        try:
+            from paperqa import Settings  # noqa: F401
+        except ImportError:
+            self.skipTest("paperqa not installed on host")
+            return
+
+        runtime = LitellmTimeoutTests()._runtime()
+        settings = build_paperqa_settings(runtime)
+        self.assertFalse(settings.prompts.use_json)
+        self.assertTrue(settings.answer.evidence_skip_summary)
+
+    def test_prompt_and_answer_settings_respect_env_overrides(self) -> None:
+        try:
+            from paperqa.settings import AnswerSettings, PromptSettings  # noqa: F401
+        except ImportError:
+            self.skipTest("paperqa not installed on host")
+            return
+
+        with mock.patch.dict(
+            os.environ,
+            {"PAPERQA_USE_JSON_CONTEXT": "1", "PAPERQA_EVIDENCE_SKIP_SUMMARY": "0"},
+            clear=False,
+        ):
+            self.assertTrue(_build_prompt_settings().use_json)
+            self.assertFalse(_build_answer_settings().evidence_skip_summary)
 
 
 class ParsingSettingsTests(unittest.TestCase):

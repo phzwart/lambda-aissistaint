@@ -130,9 +130,8 @@ const allUserMessageText = (messages) => {
 const wantsFollowUpQuestionsRequest = (messages) => {
   const allUsers = allUserMessageText(messages);
   return (
-    allUsers.includes('return json only with keys') &&
-    allUsers.includes('## structured summary') &&
-    allUsers.includes('## extended abstract')
+    (allUsers.includes('## structured summary') && allUsers.includes('## extended abstract')) ||
+    (allUsers.includes('use only the supplied reconstruction') && allUsers.includes('"depth"'))
   );
 };
 
@@ -156,6 +155,7 @@ const wantsExtendedAbstract = (messages) => {
   }
   return (
     text.includes('## original abstract (verbatim') ||
+    text.includes('### full paper text') ||
     (text.includes('target length') && text.includes('write plain markdown prose'))
   );
 };
@@ -166,6 +166,7 @@ const wantsExtendedAbstractFinalAnswer = (messages) => {
   return (
     last.includes('answer in a direct and concise tone') &&
     (allUsers.includes('## original abstract (verbatim') ||
+      allUsers.includes('### full paper text') ||
       (allUsers.includes('target length') && allUsers.includes('write plain markdown prose')))
   );
 };

@@ -13,7 +13,7 @@ class SettingsError(RuntimeError):
 def _default_request_timeout_seconds() -> float:
     for candidate in (
         os.environ.get("PAPERQA_LITELLM_TIMEOUT_S", "").strip(),
-        "600",
+        "900",
     ):
         if not candidate:
             continue
@@ -21,7 +21,7 @@ def _default_request_timeout_seconds() -> float:
             return max(60.0, float(candidate))
         except ValueError:
             continue
-    return 600.0
+    return 900.0
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ class RuntimeSettings:
     litellm_url: str
     litellm_api_key: str
     pqa_home: Path
-    request_timeout_seconds: float = 600.0
+    request_timeout_seconds: float = 900.0
     provider_model: str = ""
     provider_endpoint: str = ""
     configured_name: str = ""
@@ -98,6 +98,38 @@ class RuntimeSettings:
         }
 
 
+def _env_truthy(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _build_prompt_settings():
+    try:
+        from paperqa.settings import PromptSettings
+    except ImportError as error:
+        raise SettingsError("PaperQA2 prompt settings are unavailable.") from error
+
+    # Chatty / instruction-tuned models often return markdown instead of
+    # {"summary", "relevance_score"}, which breaks PaperQA's JSON evidence step.
+    use_json = _env_truthy("PAPERQA_USE_JSON_CONTEXT", default=False)
+    return PromptSettings(use_json=use_json)
+
+
+def _build_answer_settings():
+    try:
+        from paperqa.settings import AnswerSettings
+    except ImportError as error:
+        raise SettingsError("PaperQA2 answer settings are unavailable.") from error
+
+    # Our final query asks for a full structured paper summary. Using that same
+    # question for every excerpt causes long markdown blobs and score-parse errors.
+    # Skip per-chunk LLM summarization and pass raw excerpts to the final answer step.
+    evidence_skip_summary = _env_truthy("PAPERQA_EVIDENCE_SKIP_SUMMARY", default=True)
+    return AnswerSettings(evidence_skip_summary=evidence_skip_summary)
+
+
 def _apply_parsing_test_flags(parsing) -> None:
     """Allow tiny fixture PDFs in mock E2E smoke tests."""
     if os.environ.get("PAPERQA_DISABLE_DOC_VALID_CHECK", "").strip().lower() in {
@@ -138,6 +170,34 @@ def _build_parsing_settings(runtime: RuntimeSettings):
         return parsing
 
 
+def settings_for_extended_abstract(settings):
+    """Tune retrieval/answer length for the extended-abstract reconstruction pass."""
+    try:
+        from paperqa.settings import AnswerSettings
+    except ImportError as error:
+        raise SettingsError("PaperQA2 answer settings are unavailable.") from error
+
+    base_answer = getattr(settings, "answer", None)
+    if base_answer is None:
+        return settings
+
+    updates = {
+        "answer_length": "900 to 1200 words",
+        "evidence_k": 20,
+        "evidence_retrieval": True,
+    }
+    try:
+        answer = base_answer.model_copy(update=updates)
+    except AttributeError:
+        answer = AnswerSettings(**{**base_answer.model_dump(), **updates})
+
+    try:
+        return settings.model_copy(update={"answer": answer})
+    except AttributeError:
+        settings.answer = answer
+        return settings
+
+
 def build_paperqa_settings(runtime: RuntimeSettings):
     try:
         from paperqa import Settings
@@ -149,6 +209,8 @@ def build_paperqa_settings(runtime: RuntimeSettings):
     llm_config = _litellm_config(runtime.llm_model, runtime)
     summary_llm_config = _litellm_config(runtime.summary_llm_model, runtime)
     parsing = _build_parsing_settings(runtime)
+    prompts = _build_prompt_settings()
+    answer = _build_answer_settings()
     try:
         return Settings(
             llm=proxy_llm,
@@ -157,6 +219,8 @@ def build_paperqa_settings(runtime: RuntimeSettings):
             summary_llm_config=summary_llm_config,
             embedding=runtime.embedding_model,
             parsing=parsing,
+            prompts=prompts,
+            answer=answer,
         )
     except TypeError:
         settings = Settings()
@@ -166,6 +230,8 @@ def build_paperqa_settings(runtime: RuntimeSettings):
         settings.summary_llm_config = summary_llm_config
         settings.embedding = runtime.embedding_model
         settings.parsing = parsing
+        settings.prompts = prompts
+        settings.answer = answer
         _apply_parsing_test_flags(settings.parsing)
         return settings
 
@@ -237,6 +303,7 @@ def _litellm_params(runtime: RuntimeSettings, *, proxy_model: str) -> dict[str, 
         "temperature": 0.1,
         "timeout": timeout,
         "request_timeout": timeout,
+        "stream_timeout": timeout,
     }
 
 

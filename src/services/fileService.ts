@@ -1,6 +1,7 @@
 import { appConfig } from '../config/env';
 import type { ManagedFile } from '../types/domain';
 import type { FileProcessJob } from '../types/fileProcess';
+import type { ParsedArtifactContent, ParsedArtifactListing } from '../types/parsedArtifact';
 import { apiRequest } from './apiClient';
 import { authService } from './authService';
 import { mockDelay } from './mockDelay';
@@ -73,6 +74,75 @@ export const fileService = {
       `/api/projects/${encodeURIComponent(projectId)}/files/process/jobs/${encodeURIComponent(jobId)}`,
     );
     return body.job;
+  },
+
+  async listParsedArtifacts(projectId: string, fileId: string): Promise<ParsedArtifactListing> {
+    if (useApi()) {
+      return apiRequest<ParsedArtifactListing>(
+        `/api/projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}/parsed-artifacts`,
+      );
+    }
+
+    await mockDelay(120);
+    return {
+      fileId,
+      fileName: 'mock-paper.pdf',
+      stem: 'mock-stem',
+      parsedPrefix: 'parsed',
+      prefix: 'parsed/mock-stem/',
+      artifacts: [
+        {
+          name: 'abstract.txt',
+          kind: 'text',
+          objectKey: 'parsed/mock-stem/abstract.txt',
+          size: 120,
+          lastModified: new Date().toISOString(),
+          contentType: 'text/plain; charset=utf-8',
+        },
+        {
+          name: 'summary.md',
+          kind: 'markdown',
+          objectKey: 'parsed/mock-stem/summary.md',
+          size: 400,
+          lastModified: new Date().toISOString(),
+          contentType: 'text/markdown; charset=utf-8',
+        },
+      ],
+    };
+  },
+
+  async getParsedArtifact(
+    projectId: string,
+    fileId: string,
+    artifactName: string,
+  ): Promise<ParsedArtifactContent> {
+    if (useApi()) {
+      return apiRequest<ParsedArtifactContent>(
+        `/api/projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}/parsed-artifacts/${encodeURIComponent(artifactName)}`,
+      );
+    }
+
+    await mockDelay(80);
+    if (artifactName.endsWith('.md')) {
+      return {
+        fileId,
+        fileName: 'mock-paper.pdf',
+        name: artifactName,
+        kind: 'markdown',
+        objectKey: `parsed/mock-stem/${artifactName}`,
+        contentType: 'text/markdown; charset=utf-8',
+        content: '# Mock summary\n\nProcessed output preview.',
+      };
+    }
+    return {
+      fileId,
+      fileName: 'mock-paper.pdf',
+      name: artifactName,
+      kind: 'text',
+      objectKey: `parsed/mock-stem/${artifactName}`,
+      contentType: 'text/plain; charset=utf-8',
+      content: 'Mock plain-text artifact.',
+    };
   },
 
   async getStoredProcessLog(

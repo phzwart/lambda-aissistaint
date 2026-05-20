@@ -8,9 +8,14 @@ from typing import Any
 
 from .abstract import extract_abstract_from_paper_text
 from .extract import ExtractionError, extract_paper
-from .paperqa_settings import RuntimeSettings, SettingsError, build_paperqa_settings
+from .paperqa_settings import (
+    RuntimeSettings,
+    SettingsError,
+    build_paperqa_settings,
+    settings_for_extended_abstract as _settings_for_extended_abstract,
+)
 from .schema import (
-    STRUCTURED_SUMMARY_QUESTION,
+    DEFAULT_STRUCTURED_SUMMARY_INSTRUCTION,
     build_extended_abstract_question,
     build_follow_up_questions_question,
     build_summary_record,
@@ -44,6 +49,14 @@ def _is_mock_litellm_runtime() -> bool:
     api_key = os.environ.get("PAPERQA_LITELLM_API_KEY", "").strip()
     litellm_url = os.environ.get("PAPERQA_LITELLM_URL", "").strip()
     return api_key in {"mock-smoke-key", "mock", "test"} or "14009" in litellm_url
+
+
+async def _call_summary_llm_direct(settings, prompt: str, *, name: str) -> str:
+    """Direct LLM call without PaperQA evidence retrieval (for follow-up questions)."""
+    model = settings.get_summary_llm()
+    # LiteLLMModel.call_single accepts a plain str (no lmi.Message import required).
+    result = await model.call_single(prompt, name=name)
+    return str(result.text or "").strip()
 
 
 async def run_paperqa_summary(
@@ -111,7 +124,10 @@ async def run_paperqa_summary(
             docname=input_pdf.name,
             settings=settings,
         )
-        summary_session = await docs.aquery(STRUCTURED_SUMMARY_QUESTION, settings=settings)
+        summary_question = (
+            skill_runtime["structured_summary_instruction"] or DEFAULT_STRUCTURED_SUMMARY_INSTRUCTION
+        )
+        summary_session = await docs.aquery(summary_question, settings=settings)
     except Exception as error:  # pragma: no cover - depends on PaperQA2 runtime internals
         raise PaperQAExecutionError(f"PaperQA2 summary workflow failed: {error}") from error
 
@@ -122,15 +138,16 @@ async def run_paperqa_summary(
     extended_abstract_text = ""
     extended_abstract_path = output_dir / "extended_abstract.md"
     if skill_runtime["extended_abstract_enabled"]:
-        target_chars = max(500, abstract_result.char_count * 5)
         extended_question = build_extended_abstract_question(
             instruction=skill_runtime["extended_abstract_instruction"],
             abstract_text=abstract_result.text,
-            target_char_count=target_chars,
+            paper_text=extraction.text,
             citation_label=resolved_citation_label,
+            document_name=input_pdf.name,
         )
+        extended_settings = _settings_for_extended_abstract(settings)
         try:
-            extended_session = await docs.aquery(extended_question, settings=settings)
+            extended_session = await docs.aquery(extended_question, settings=extended_settings)
             extended_abstract_text = _extract_answer(extended_session)
             extended_abstract_path.write_text(extended_abstract_text, encoding="utf-8")
         except Exception as error:  # pragma: no cover
@@ -145,13 +162,14 @@ async def run_paperqa_summary(
         questions_question = build_follow_up_questions_question(
             instruction=skill_runtime["follow_up_questions_instruction"],
             summary_markdown=answer,
-            abstract_text=abstract_result.text,
             extended_abstract=extended_abstract_text,
-            metadata=extraction_meta,
         )
         try:
-            questions_session = await docs.aquery(questions_question, settings=settings)
-            questions_raw = _extract_answer(questions_session)
+            questions_raw = await _call_summary_llm_direct(
+                settings,
+                questions_question,
+                name="follow_up_questions",
+            )
             follow_up_payload = _parse_follow_up_questions(questions_raw, warnings)
             if (
                 not follow_up_payload.get("depth")
@@ -166,7 +184,6 @@ async def run_paperqa_summary(
                 "depth": [],
                 "breadth": [],
                 "error": str(error),
-                "raw": "",
             }
         follow_up_path.write_text(
             json.dumps(follow_up_payload, indent=2, sort_keys=True),
@@ -214,41 +231,97 @@ async def run_paperqa_summary(
     return outputs
 
 
+def _strip_paperqa_formatted_wrapper(text: str) -> str:
+    """PaperQA formatted_answer prefixes the full query as 'Question: …'."""
+    stripped = text.strip()
+    if stripped.startswith("Question:"):
+        parts = stripped.split("\n\n", 1)
+        if len(parts) == 2:
+            stripped = parts[1].strip()
+    if "\n\nReferences\n\n" in stripped:
+        stripped = stripped.split("\n\nReferences\n\n", 1)[0].strip()
+    return stripped
+
+
+def _strip_leading_prompt_echo(text: str, *, question: str | None = None) -> str:
+    normalized = text.strip()
+    if not question:
+        return normalized
+    prompt = question.strip()
+    if not prompt:
+        return normalized
+    if normalized.startswith(prompt):
+        return normalized[len(prompt) :].lstrip()
+    for prefix_len in (min(800, len(prompt)), min(400, len(prompt)), min(200, len(prompt))):
+        prefix = prompt[:prefix_len]
+        if prefix_len > 40 and normalized.startswith(prefix):
+            remainder = normalized[prefix_len:].lstrip(" \t\n:-")
+            if len(remainder) > 80:
+                return remainder
+    return normalized
+
+
+def _extract_answer(session: object) -> str:
+    question = getattr(session, "question", None)
+    question_text = str(question).strip() if question else None
+
+    for attribute in ("answer", "raw_answer"):
+        value = getattr(session, attribute, None)
+        if value:
+            text = _strip_leading_prompt_echo(str(value).strip(), question=question_text)
+            if text:
+                return text
+
+    formatted = getattr(session, "formatted_answer", None)
+    if formatted:
+        text = _strip_leading_prompt_echo(
+            _strip_paperqa_formatted_wrapper(str(formatted)),
+            question=question_text,
+        )
+        if text:
+            return text
+
+    fallback = getattr(session, "text", None)
+    if fallback:
+        text = _strip_leading_prompt_echo(
+            _strip_paperqa_formatted_wrapper(str(fallback).strip()),
+            question=question_text,
+        )
+        if text:
+            return text
+    return ""
+
+
 def _parse_follow_up_questions(raw: str, warnings: list[str]) -> dict[str, Any]:
     text = raw.strip()
+    json_start = text.find("{")
+    if json_start > 0:
+        text = text[json_start:]
     if not text:
         warnings.append("Follow-up questions response was empty.")
-        return {"depth": [], "breadth": [], "raw": text}
+        return {"depth": [], "breadth": []}
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
         match = re.search(r"\{[\s\S]*\}", text)
         if not match:
             warnings.append("Follow-up questions response was not valid JSON.")
-            return {"depth": [], "breadth": [], "raw": text}
+            return {"depth": [], "breadth": []}
         try:
             payload = json.loads(match.group(0))
         except json.JSONDecodeError:
             warnings.append("Follow-up questions response was not valid JSON.")
-            return {"depth": [], "breadth": [], "raw": text}
+            return {"depth": [], "breadth": []}
     if not isinstance(payload, dict):
         warnings.append("Follow-up questions JSON must be an object.")
-        return {"depth": [], "breadth": [], "raw": text}
+        return {"depth": [], "breadth": []}
     depth = [str(item).strip() for item in (payload.get("depth") or []) if str(item).strip()]
     breadth = [str(item).strip() for item in (payload.get("breadth") or []) if str(item).strip()]
     if len(depth) != 5 or len(breadth) != 5:
         warnings.append(
             f"Follow-up questions expected 5 depth and 5 breadth items; got {len(depth)} depth and {len(breadth)} breadth."
         )
-    return {"depth": depth[:5], "breadth": breadth[:5], "raw": text}
-
-
-def _extract_answer(session: object) -> str:
-    for attribute in ("formatted_answer", "answer", "text"):
-        value = getattr(session, attribute, None)
-        if value:
-            return str(value).strip()
-    return str(session or "").strip()
+    return {"depth": depth[:5], "breadth": breadth[:5]}
 
 
 def _safe_response_metadata(session: object) -> dict[str, Any]:

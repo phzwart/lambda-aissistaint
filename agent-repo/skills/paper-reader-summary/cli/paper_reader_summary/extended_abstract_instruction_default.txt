@@ -1,0 +1,79 @@
+Write an expert-level extended abstract that reconstructs the paper as a dense, evidence-rich scientific narrative.
+
+This is not a paraphrase of the abstract and not a generic summary. Treat the original abstract as a compressed scaffold. For each major claim in the abstract, recover the omitted evidence from the paper body and expand it with methods, comparisons, quantitative results, controls, caveats, failed or inconclusive analyses, and interpretation.
+
+The extended abstract should read like a compressed version of the full paper, preserving the paper's storyline and level of certainty.
+
+Before writing, identify:
+- the central claims
+- the evidence supporting each claim
+- key methodological details omitted from the abstract
+- strongest quantitative findings
+- limitations, caveats, uncertainties, and negative results
+
+Then write a coherent narrative that covers:
+- scientific motivation
+- experimental design
+- materials/systems studied
+- instrumentation and operating conditions
+- analytical methods
+- controls and comparisons
+- quantitative findings
+- system-specific effects
+- mechanistic interpretations and uncertainty
+- practical implications
+
+Use the pattern:
+
+observation → comparison → interpretation → uncertainty
+
+Do not collapse reasoning into vague conclusions.
+
+Bad:
+"The authors proposed electrolyte degradation."
+
+Good:
+"The authors observed a reaction-lag gradient extending beyond the irradiated beam spot; because the beam edge was much sharper than the affected region, they interpreted this as consistent with diffusion of damaged electrolyte species, while leaving the mechanism unresolved."
+
+--------------------------------------------------
+ANTI-SUMMARIZATION RULE
+--------------------------------------------------
+
+Do not write paragraph-opening topic summaries that merely restate conclusions.
+
+Avoid sentences like:
+- "The study investigated…"
+- "The researchers employed…"
+- "The results demonstrated…"
+- "The work highlights…"
+
+unless immediately followed by concrete experimental details.
+
+Prefer paragraphs that begin with:
+- explicit experimental conditions
+- observed contrasts
+- measured outcomes
+- specific methodological setups
+
+Bad:
+"The study investigated beam damage across different chemistries."
+
+Good:
+"Continuous 15 keV exposure of LFP half-cells during 2.5 h charging at C/5 almost completely suppressed the LFP→FP phase transition within the irradiated 0.5 mm × 0.5 mm beam region, whereas LNMO electrodes exposed intermittently at 25 keV showed little observable reaction hindrance."
+
+Every paragraph should advance the experimental argument, not summarize it abstractly.
+
+Requirements:
+- 900–1200 words; outputs under 800 words are incorrect.
+- Every paragraph must include at least one methodological detail, one quantitative detail, and one paper-specific observation.
+- Include exposed vs control comparisons, different materials, energies, doses, or operating regimes where available.
+- Include failed analyses, negative findings, and limitations.
+- Distinguish direct observations from hypotheses using cautious language such as "suggests," "may indicate," or "the authors propose."
+- Do not invent facts, introduce outside knowledge, overstate causality, fabricate citations, or omit caveats.
+- Avoid generic phrases such as "this study highlights" unless immediately followed by concrete evidence.
+
+Citation rules:
+- Every paragraph must contain at least one inline citation.
+- Use: (DOCUMENT_NAME, pp. X–Y)
+- Use the narrowest page range supported by the supplied text.
+- Do not create placeholder or synthetic citations.

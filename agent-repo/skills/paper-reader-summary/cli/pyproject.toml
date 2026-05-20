@@ -14,3 +14,10 @@ dependencies = [
 
 [project.scripts]
 paper-reader-summary = "paper_reader_summary.__main__:main"
+
+[tool.setuptools.package-data]
+paper_reader_summary = [
+  "extended_abstract_instruction_default.txt",
+  "structured_summary_instruction_default.txt",
+  "follow_up_questions_instruction_default.txt",
+]

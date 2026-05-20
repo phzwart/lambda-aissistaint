@@ -1,9 +1,11 @@
-import { appendFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 const isoNow = () => new Date().toISOString();
 
 export const createProcessLogger = ({ logFilePath, onLine } = {}) => {
   const lines = [];
+  let logFileDisabled = false;
 
   const append = async (message, level = 'info') => {
     const line = `[${isoNow()}] [${level}] ${message}`;
@@ -11,8 +13,21 @@ export const createProcessLogger = ({ logFilePath, onLine } = {}) => {
     if (onLine) {
       onLine(line);
     }
-    if (logFilePath) {
-      await appendFile(logFilePath, `${line}\n`, 'utf8');
+    if (logFilePath && !logFileDisabled) {
+      try {
+        await appendFile(logFilePath, `${line}\n`, 'utf8');
+      } catch (error) {
+        if (error?.code === 'ENOENT') {
+          try {
+            await mkdir(dirname(logFilePath), { recursive: true });
+            await appendFile(logFilePath, `${line}\n`, 'utf8');
+          } catch {
+            logFileDisabled = true;
+          }
+        } else {
+          throw error;
+        }
+      }
     }
     return line;
   };

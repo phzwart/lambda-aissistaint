@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { access, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { paperqaRunnerTimeoutMs } from './paperqaRuntime.mjs';
 
-const defaultTimeoutMs = Number.parseInt(process.env.PAPERQA_RUNNER_TIMEOUT_MS ?? '900000', 10) || 900_000;
+const defaultTimeoutMs = paperqaRunnerTimeoutMs();
 
 const emitLogLines = (chunk, stream, onLogLine) => {
   const text = chunk.toString();
@@ -28,42 +30,90 @@ const runProcess = (command, args, { env, timeoutMs, onLogLine }) =>
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    let logForwarding = true;
+
+    const forwardLog = (chunk, stream) => {
+      if (!logForwarding) {
+        return '';
+      }
+      return emitLogLines(chunk, stream, onLogLine);
+    };
+
+    const stopForwarding = () => {
+      logForwarding = false;
+      child.stdout?.removeAllListeners('data');
+      child.stderr?.removeAllListeners('data');
+    };
+
+    const killGraceMs =
+      Number.parseInt(process.env.PAPERQA_RUNNER_KILL_GRACE_MS ?? '5000', 10) || 5000;
+
+    const terminateChild = async () => {
+      stopForwarding();
+      child.kill('SIGTERM');
+      await Promise.race([
+        once(child, 'close'),
+        new Promise((resolveAfterGrace) => setTimeout(resolveAfterGrace, killGraceMs)),
+      ]);
+      if (child.exitCode === null) {
+        child.kill('SIGKILL');
+        await Promise.race([once(child, 'close'), new Promise((r) => setTimeout(r, 2000))]);
+      }
+    };
+
     child.stdout.on('data', (chunk) => {
-      stdout += emitLogLines(chunk, 'stdout', onLogLine);
+      stdout += forwardLog(chunk, 'stdout');
     });
     child.stderr.on('data', (chunk) => {
-      stderr += emitLogLines(chunk, 'stderr', onLogLine);
+      stderr += forwardLog(chunk, 'stderr');
     });
 
     const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      reject(
-        Object.assign(new Error(`PaperQA runner timed out after ${timeoutMs}ms.`), {
-          status: 504,
-          stderr,
-        }),
-      );
+      void (async () => {
+        await terminateChild();
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(
+          Object.assign(new Error(`PaperQA runner timed out after ${timeoutMs}ms.`), {
+            status: 504,
+            stderr,
+          }),
+        );
+      })();
     }, timeoutMs);
 
-    child.on('error', (error) => {
+    const finish = (handler) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearTimeout(timer);
-      reject(error);
+      stopForwarding();
+      handler();
+    };
+
+    child.on('error', (error) => {
+      finish(() => reject(error));
     });
 
     child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
-      }
-      const detail = stderr.trim() || stdout.trim() || `exit code ${code}`;
-      reject(
-        Object.assign(new Error(`PaperQA runner failed: ${detail}`), {
-          status: 502,
-          stderr,
-          stdout,
-        }),
-      );
+      finish(() => {
+        if (code === 0) {
+          resolve({ stdout, stderr });
+          return;
+        }
+        const detail = stderr.trim() || stdout.trim() || `exit code ${code}`;
+        reject(
+          Object.assign(new Error(`PaperQA runner failed: ${detail}`), {
+            status: 502,
+            stderr,
+            stdout,
+          }),
+        );
+      });
     });
   });
 
@@ -171,8 +221,8 @@ export const runPaperqaSummary = async ({
 
   const litellmTimeoutSeconds =
     Number(litellmRuntime?.requestTimeoutSeconds) ||
-    Number.parseInt(process.env.PAPERQA_LITELLM_TIMEOUT_S ?? '600', 10) ||
-    600;
+    Number.parseInt(process.env.PAPERQA_LITELLM_TIMEOUT_S ?? '900', 10) ||
+    900;
 
   const { stdout, stderr } = await runProcess(podman, args, {
     timeoutMs,

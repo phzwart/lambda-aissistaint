@@ -20,7 +20,11 @@ import type {
   PaperReaderProcessingConfig,
   ProjectAgentSkillBinding,
 } from '../types/domain';
-import { PAPER_READER_SKILL_ID, paperReaderDefaultProcessingConfig } from '../constants/paperReaderDefaults';
+import {
+  PAPER_READER_SKILL_ID,
+  paperReaderDefaultProcessingConfig,
+  PAPER_READER_INSTRUCTION_MAX_CHARS,
+} from '../constants/paperReaderDefaults';
 
 const tierLabels: Record<LlmTier, string> = {
   a: 'A',
@@ -1480,7 +1484,51 @@ export function PreferencesPage() {
                         <div style={{ ...cardStyle, padding: 16, marginLeft: 28 }}>
                           <p style={{ margin: '0 0 12px', color: '#667085', fontSize: 14 }}>
                             Instructions passed to the Paper Reader Summary runner when processing PDFs in this project.
+                            The structured summary becomes <code>summary.md</code>; the extended abstract uses the journal
+                            abstract plus full paper text; follow-up questions use only those two outputs.
                           </p>
+                          <label style={{ ...fieldStyle, display: 'block', marginBottom: 12 }}>
+                            Structured summary instruction
+                            <textarea
+                              value={paperConfig.summaryInstruction ?? ''}
+                              onChange={(event) =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  summaryInstruction: event.target.value,
+                                  useDefaultSummaryInstruction: false,
+                                })
+                              }
+                              rows={12}
+                              placeholder="Default ten-section summary template loads when you enable this skill. Edit and save to customize."
+                              style={textareaStyle}
+                            />
+                            <span
+                              style={{
+                                marginTop: 6,
+                                fontSize: 12,
+                                color:
+                                  (paperConfig.summaryInstruction?.length ?? 0) >
+                                  PAPER_READER_INSTRUCTION_MAX_CHARS
+                                    ? '#9f1d1d'
+                                    : '#667085',
+                              }}
+                            >
+                              {(paperConfig.summaryInstruction?.length ?? 0).toLocaleString()} /{' '}
+                              {PAPER_READER_INSTRUCTION_MAX_CHARS.toLocaleString()} characters
+                              {paperConfig.useDefaultSummaryInstruction ? ' · using skill default template' : ''}
+                            </span>
+                            <button
+                              type="button"
+                              style={{ ...secondaryButtonStyle, marginTop: 8, marginBottom: 12 }}
+                              onClick={() =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  summaryInstruction: '',
+                                  useDefaultSummaryInstruction: true,
+                                })
+                              }
+                            >
+                              Reset summary to skill default
+                            </button>
+                          </label>
                           <label style={{ ...fieldStyle, display: 'block', marginBottom: 12 }}>
                             Extended abstract instruction
                             <textarea
@@ -1488,11 +1536,40 @@ export function PreferencesPage() {
                               onChange={(event) =>
                                 updatePaperReaderProcessing(skill.id, {
                                   extendedAbstractInstruction: event.target.value,
+                                  useDefaultExtendedAbstract: false,
                                 })
                               }
-                              rows={4}
+                              rows={16}
+                              placeholder="Full reconstruction template loads when you enable this skill. Edit and save to customize; use Reset to restore the skill default."
                               style={textareaStyle}
                             />
+                            <span
+                              style={{
+                                marginTop: 6,
+                                fontSize: 12,
+                                color:
+                                  (paperConfig.extendedAbstractInstruction?.length ?? 0) >
+                                  PAPER_READER_INSTRUCTION_MAX_CHARS
+                                    ? '#9f1d1d'
+                                    : '#667085',
+                              }}
+                            >
+                              {(paperConfig.extendedAbstractInstruction?.length ?? 0).toLocaleString()} /{' '}
+                              {PAPER_READER_INSTRUCTION_MAX_CHARS.toLocaleString()} characters
+                              {paperConfig.useDefaultExtendedAbstract ? ' · using skill default template' : ''}
+                            </span>
+                            <button
+                              type="button"
+                              style={{ ...secondaryButtonStyle, marginTop: 8 }}
+                              onClick={() =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  extendedAbstractInstruction: '',
+                                  useDefaultExtendedAbstract: true,
+                                })
+                              }
+                            >
+                              Reset to skill default template
+                            </button>
                           </label>
                           <label style={{ ...fieldStyle, display: 'block' }}>
                             Follow-up questions instruction
@@ -1501,11 +1578,42 @@ export function PreferencesPage() {
                               onChange={(event) =>
                                 updatePaperReaderProcessing(skill.id, {
                                   followUpQuestionsInstruction: event.target.value,
+                                  useDefaultFollowUpQuestionsInstruction: false,
                                 })
                               }
-                              rows={4}
+                              rows={12}
+                              placeholder="Questions are generated from extended_abstract.md and summary.md only—not the full paper."
                               style={textareaStyle}
                             />
+                            <span
+                              style={{
+                                marginTop: 6,
+                                fontSize: 12,
+                                color:
+                                  (paperConfig.followUpQuestionsInstruction?.length ?? 0) >
+                                  PAPER_READER_INSTRUCTION_MAX_CHARS
+                                    ? '#9f1d1d'
+                                    : '#667085',
+                              }}
+                            >
+                              {(paperConfig.followUpQuestionsInstruction?.length ?? 0).toLocaleString()} /{' '}
+                              {PAPER_READER_INSTRUCTION_MAX_CHARS.toLocaleString()} characters
+                              {paperConfig.useDefaultFollowUpQuestionsInstruction
+                                ? ' · using skill default template'
+                                : ''}
+                            </span>
+                            <button
+                              type="button"
+                              style={{ ...secondaryButtonStyle, marginTop: 8 }}
+                              onClick={() =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  followUpQuestionsInstruction: '',
+                                  useDefaultFollowUpQuestionsInstruction: true,
+                                })
+                              }
+                            >
+                              Reset follow-up to skill default
+                            </button>
                           </label>
                         </div>
                       ) : null}

@@ -33,8 +33,8 @@ The host must inject:
 - `extraction_metadata.json`: title/authors/page-count hints from extraction, plus abstract extraction flags.
 - `summary.md`: human-readable structured summary (citations use the upload stem, e.g. `{timestamp}-{uuid}-{name}.pdf`, not `paper.pdf`).
 - `summary.json`: structured record containing the summary and safe metadata.
-- `extended_abstract.md`: LLM-expanded abstract (~5× length), guided by per-project instructions in Setup → Paper Reader Summary.
-- `follow_up_questions.json`: `{ "depth": [5 questions], "breadth": [5 questions] }` grounded in the paper.
+- `extended_abstract.md`: Expert-level reconstruction (900–1200 words) from the journal abstract plus PaperQA-retrieved evidence (not the raw prompt or full `extracted.txt`).
+- `follow_up_questions.json`: `{ "depth": [5 questions], "breadth": [5 questions] }` from `extended_abstract.md` and `summary.md` only (not the full paper).
 - `paper_metadata.json`: runtime model aliases, `paper_id`, `citation_label`, embedding model, warnings, and safe PaperQA2 response metadata.
 
 Per-project processing instructions are stored on the project skill binding (`processingConfig`) and passed via `skill-runtime.json` at run time. Defaults live in `defaults.json`.

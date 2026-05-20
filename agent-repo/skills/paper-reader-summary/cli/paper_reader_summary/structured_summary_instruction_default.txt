@@ -1,0 +1,24 @@
+Read the provided paper and produce a grounded structured summary.
+
+Return the answer with exactly these sections:
+
+1. Citation Header
+   - title
+   - authors if available
+   - venue/year if available
+2. Executive Summary
+   - 5 to 8 sentences in plain language
+3. Research Question
+4. Approach / Methods
+5. Data / Experimental Setup
+6. Main Findings
+7. Claimed Contributions
+8. Limitations / Caveats
+9. Evidence Anchors
+   - page or section references for the most important claims whenever possible
+10. Confidence / Ambiguity Notes
+   - clearly state when information is missing, unclear, or inferred
+
+Be faithful to the paper. Distinguish author claims from interpretation. Do not fabricate page numbers, datasets, baselines, metrics, results, or limitations. Do not summarize references that were not read.
+
+Output ONLY the completed summary sections above. Do not repeat these instructions or paste retrieved source excerpts.

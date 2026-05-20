@@ -1,0 +1,61 @@
+Generate exactly 5 depth questions and 5 breadth questions from the supplied paper materials.
+
+Return valid JSON only:
+
+{
+"depth": ["..."],
+"breadth": ["..."]
+}
+
+Definitions:
+
+Depth questions:
+
+unresolved mechanisms
+causal ambiguity
+methodological limitations
+validation gaps
+contradictory observations
+missing controls
+parameter sensitivities
+uncertainty in interpretation
+
+Breadth questions:
+
+related systems
+neighboring materials or chemistries
+analogous experimental methods
+transferable protocols
+adjacent operating regimes
+comparative measurement strategies
+
+Requirements:
+
+Ground every question in specific observations, comparisons, limitations, anomalies, or quantitative findings from the supplied materials.
+Prefer concrete experimental details over abstract wording.
+Use observation → uncertainty → question structure when possible.
+Prefer experimentally actionable questions.
+Include specific materials, parameters, conditions, energies, concentrations, operating regimes, timescales, or measurement details when available.
+Distinguish unresolved interpretation from established observation.
+Breadth questions must remain closely related to the paper topic and methodology.
+
+Avoid:
+
+generic future-work questions
+vague implications
+broad societal or technological speculation
+AI/ML speculation unless directly discussed in the paper
+repeating the same mechanism or limitation multiple times
+yes/no phrasing when possible
+
+Bad:
+
+“What are the broader implications?”
+“Could AI improve this?”
+“How might this be useful in industry?”
+
+Good:
+
+“The irradiated region exhibited a delayed phase transition relative to surrounding material despite similar electrochemical profiles. Would spatially resolved electrolyte spectroscopy distinguish electrolyte degradation from transport-limited reaction hindrance?”
+
+Use only the supplied paper materials.

@@ -8,6 +8,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
+import { ProcessedFilesInspectPanel } from '../components/files/ProcessedFilesInspectPanel';
 import { fileService } from '../services/fileService';
 import { useFileProcessStore } from '../state/fileProcessStore';
 import { useWorkflowStore } from '../state/workflowStore';
@@ -59,6 +60,8 @@ export function FileManagementPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isLoadingLog, setIsLoadingLog] = useState(false);
+  const [mainTab, setMainTab] = useState<'upload' | 'processed'>('upload');
+  const [inspectFileId, setInspectFileId] = useState<string | null>(null);
 
   const selectedLogFileId = useFileProcessStore((state) => state.selectedLogFileId);
   const setSelectedLogFileId = useFileProcessStore((state) => state.setSelectedLogFileId);
@@ -140,6 +143,7 @@ export function FileManagementPage() {
   const selectFileForLog = useCallback(
     async (fileId: string) => {
       setSelectedLogFileId(fileId);
+      setInspectFileId(fileId);
       if (!projectId) {
         return;
       }
@@ -249,6 +253,7 @@ export function FileManagementPage() {
 
     if (processTargets[0]) {
       setSelectedLogFileId(processTargets[0].id);
+      setInspectFileId(processTargets[0].id);
     }
 
     try {
@@ -330,13 +335,50 @@ export function FileManagementPage() {
       <section>
         <h1 style={{ margin: 0, fontSize: 28 }}>File Management</h1>
         <p style={{ margin: '8px 0 0', color: '#667085', fontSize: 16 }}>
-          Upload PDFs to MinIO, run PaperQA summarization, and click any row to view its process log.
+          Upload PDFs, run PaperQA summarization, view process logs, and inspect parsed outputs (.txt as plain text,
+          .md rendered).
         </p>
       </section>
+
+      <div style={fileTabsStyle} role="tablist" aria-label="File management views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mainTab === 'upload'}
+          onClick={() => setMainTab('upload')}
+          style={{
+            ...fileTabButtonStyle,
+            ...(mainTab === 'upload' ? activeFileTabButtonStyle : undefined),
+          }}
+        >
+          Upload &amp; process
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mainTab === 'processed'}
+          onClick={() => setMainTab('processed')}
+          style={{
+            ...fileTabButtonStyle,
+            ...(mainTab === 'processed' ? activeFileTabButtonStyle : undefined),
+          }}
+        >
+          Processed outputs
+        </button>
+      </div>
 
       {errorMessage && <ErrorBanner message={errorMessage} />}
       {successMessage && <SuccessBanner message={successMessage} />}
 
+      {mainTab === 'processed' ? (
+        <ProcessedFilesInspectPanel
+          projectId={projectId}
+          files={files}
+          inspectFileId={inspectFileId}
+          onInspectFileIdChange={setInspectFileId}
+        />
+      ) : (
+        <>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <label style={{ ...primaryButtonStyle, opacity: isUploading ? 0.7 : 1 }}>
           {isUploading ? 'Uploading…' : 'Upload PDFs'}
@@ -444,6 +486,8 @@ export function FileManagementPage() {
           </table>
         )}
       </section>
+        </>
+      )}
     </PageLayout>
   );
 }
@@ -483,6 +527,35 @@ function SuccessBanner({ message }: { message: string }) {
     </div>
   );
 }
+
+const fileTabsStyle = {
+  display: 'flex',
+  gap: 4,
+  alignItems: 'flex-end',
+  borderBottom: '2px solid #6d93b3',
+  marginBottom: -8,
+} satisfies CSSProperties;
+
+const fileTabButtonStyle = {
+  padding: '12px 22px',
+  border: '1px solid #b8d8ef',
+  borderBottom: '2px solid #6d93b3',
+  borderTopLeftRadius: 12,
+  borderTopRightRadius: 12,
+  background: '#d9ecfb',
+  color: '#2f5f87',
+  cursor: 'pointer',
+  fontSize: 15,
+  fontWeight: 700,
+  marginBottom: -2,
+} satisfies CSSProperties;
+
+const activeFileTabButtonStyle = {
+  background: '#ffffff',
+  color: '#1f4e79',
+  borderBottomColor: '#ffffff',
+  marginBottom: -2,
+} satisfies CSSProperties;
 
 const cardStyle = {
   overflow: 'hidden',

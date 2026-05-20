@@ -1,10 +1,18 @@
 export const PAPER_READER_SKILL_ID = 'paper-reader-summary';
 
+/** Must match server PAPER_READER_INSTRUCTION_MAX_CHARS */
+export const PAPER_READER_INSTRUCTION_MAX_CHARS = 128_000;
+
 export const paperReaderDefaultProcessingConfig = {
+  summaryInstruction:
+    'Structured summary for summary.md: ten sections (citation, executive summary, methods, findings, etc.). Use Reset to load the skill default, or paste a customized prompt.',
   extendedAbstractInstruction:
-    "Expand the paper's abstract into a richer narrative (~5× the original abstract length). Add concrete detail on methods, materials, key results, and caveats drawn only from the paper. Do not invent facts, citations, or page numbers. Use plain language suitable for an expert reader.",
+    'Expert-level extended abstract: reconstruct the paper from the journal abstract plus full paper text (900–1200 words). Use Reset to load the skill default, or paste a customized prompt.',
   followUpQuestionsInstruction:
-    'Generate exactly 5 in-depth follow-up questions (mechanisms, implications, limitations, validation) and 5 breadth questions (adjacent fields, comparisons, applications, methodology transfers). Ground every question in the paper content. Return JSON only: {"depth": ["..."], "breadth": ["..."]} with five strings in each array.',
+    'Follow-up questions from extended abstract + structured summary only (not full paper). Use Reset to load the skill default.',
   extendedAbstractEnabled: true,
   followUpQuestionsEnabled: true,
+  useDefaultSummaryInstruction: true,
+  useDefaultExtendedAbstract: true,
+  useDefaultFollowUpQuestionsInstruction: true,
 };

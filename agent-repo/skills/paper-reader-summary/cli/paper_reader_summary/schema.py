@@ -1,7 +1,54 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+_SKILL_INSTRUCTION_DIR = Path(__file__).resolve().parent
+_EXTENDED_ABSTRACT_INSTRUCTION_PATH = _SKILL_INSTRUCTION_DIR / "extended_abstract_instruction_default.txt"
+_STRUCTURED_SUMMARY_INSTRUCTION_PATH = _SKILL_INSTRUCTION_DIR / "structured_summary_instruction_default.txt"
+_FOLLOW_UP_QUESTIONS_INSTRUCTION_PATH = _SKILL_INSTRUCTION_DIR / "follow_up_questions_instruction_default.txt"
+DEFAULT_EXTENDED_ABSTRACT_MAX_PAPER_CHARS = 120_000
+DEFAULT_EXTENDED_ABSTRACT_WORD_MIN = 900
+DEFAULT_EXTENDED_ABSTRACT_WORD_MAX = 1200
+
+
+def load_default_extended_abstract_instruction() -> str:
+    try:
+        text = _EXTENDED_ABSTRACT_INSTRUCTION_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    if text:
+        return text
+    return (
+        "Write an expert-level extended abstract that reconstructs the paper as a dense, "
+        "evidence-rich scientific narrative. Treat the journal abstract as a scaffold; recover "
+        "omitted evidence from the full paper text below. Target 900–1200 words. Use "
+        "observation → comparison → interpretation → uncertainty. Inline citations: "
+        "(DOCUMENT_NAME, pp. X–Y)."
+    )
+
+
+DEFAULT_EXTENDED_ABSTRACT_INSTRUCTION = load_default_extended_abstract_instruction()
+
+
+def load_default_structured_summary_instruction() -> str:
+    try:
+        text = _STRUCTURED_SUMMARY_INSTRUCTION_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    if text:
+        return text
+    return (
+        "Read the provided paper and produce a grounded structured summary with citation header, "
+        "executive summary, methods, findings, limitations, and evidence anchors."
+    )
+
+
+DEFAULT_STRUCTURED_SUMMARY_INSTRUCTION = load_default_structured_summary_instruction()
+
+# Back-compat alias for imports and tests.
+STRUCTURED_SUMMARY_QUESTION = DEFAULT_STRUCTURED_SUMMARY_INSTRUCTION
 
 
 SUMMARY_SECTIONS = [
@@ -17,63 +64,52 @@ SUMMARY_SECTIONS = [
     "Confidence / Ambiguity Notes",
 ]
 
-STRUCTURED_SUMMARY_QUESTION = """Read the provided paper and produce a grounded structured summary.
-
-Return the answer with exactly these sections:
-
-1. Citation Header
-   - title
-   - authors if available
-   - venue/year if available
-2. Executive Summary
-   - 5 to 8 sentences in plain language
-3. Research Question
-4. Approach / Methods
-5. Data / Experimental Setup
-6. Main Findings
-7. Claimed Contributions
-8. Limitations / Caveats
-9. Evidence Anchors
-   - page or section references for the most important claims whenever possible
-10. Confidence / Ambiguity Notes
-   - clearly state when information is missing, unclear, or inferred
-
-Be faithful to the paper. Distinguish author claims from interpretation. Do not fabricate page numbers, datasets, baselines, metrics, results, or limitations. Do not summarize references that were not read."""
+def load_default_follow_up_questions_instruction() -> str:
+    try:
+        text = _FOLLOW_UP_QUESTIONS_INSTRUCTION_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    if text:
+        return text
+    return (
+        'Generate exactly 5 depth and 5 breadth questions from the supplied extended abstract and '
+        'structured summary. Return JSON only: {"depth": ["..."], "breadth": ["..."]}.'
+    )
 
 
-DEFAULT_EXTENDED_ABSTRACT_INSTRUCTION = (
-    "Expand the paper's abstract into a richer narrative (~5× the original abstract length). "
-    "Add concrete detail on methods, materials, key results, and caveats drawn only from the paper. "
-    "Do not invent facts, citations, or page numbers."
-)
-
-DEFAULT_FOLLOW_UP_QUESTIONS_INSTRUCTION = (
-    'Generate exactly 5 in-depth follow-up questions and 5 breadth questions grounded in the paper. '
-    'Return JSON only: {"depth": ["..."], "breadth": ["..."]} with five strings in each array.'
-)
+DEFAULT_FOLLOW_UP_QUESTIONS_INSTRUCTION = load_default_follow_up_questions_instruction()
 
 
 def build_extended_abstract_question(
     *,
     instruction: str,
     abstract_text: str,
-    target_char_count: int,
+    paper_text: str = "",
     citation_label: str,
+    document_name: str | None = None,
+    target_word_min: int = DEFAULT_EXTENDED_ABSTRACT_WORD_MIN,
+    target_word_max: int = DEFAULT_EXTENDED_ABSTRACT_WORD_MAX,
+    max_paper_chars: int = DEFAULT_EXTENDED_ABSTRACT_MAX_PAPER_CHARS,
 ) -> str:
+    """Build the PaperQA query. Full paper text is retrieved via indexed chunks, not embedded here."""
+    del paper_text, max_paper_chars  # kept for call-site compatibility; body comes from Docs RAG
     user_instruction = (instruction or DEFAULT_EXTENDED_ABSTRACT_INSTRUCTION).strip()
     abstract_body = abstract_text.strip() or "Not available."
+    doc_name = (document_name or f"{citation_label}.pdf").strip()
+
     return f"""{user_instruction}
 
-## Original abstract (verbatim from paper)
+## Journal abstract (scaffold only — expand using retrieved evidence from the indexed paper)
 
 {abstract_body}
 
-## Requirements
+## Task
 
-- Target length: approximately {target_char_count} characters (~5× the original abstract).
-- Cite evidence using the document name `{citation_label}.pdf` with page references when available.
-- Ground every statement in the paper; do not fabricate results or citations.
-- Write plain Markdown prose (no JSON).
+- Indexed document for citations and evidence: `{doc_name}`
+- Target length: {target_word_min}–{target_word_max} words (minimum 800 words).
+- Citation format: ({doc_name}, pp. X–Y) using only page ranges supported by retrieved evidence.
+- Output ONLY the extended abstract prose. Do not repeat these instructions, this abstract block, or retrieved source excerpts.
+- Write plain Markdown (no JSON).
 """
 
 
@@ -81,24 +117,10 @@ def build_follow_up_questions_question(
     *,
     instruction: str,
     summary_markdown: str,
-    abstract_text: str,
     extended_abstract: str,
-    metadata: dict[str, Any],
 ) -> str:
     user_instruction = (instruction or DEFAULT_FOLLOW_UP_QUESTIONS_INSTRUCTION).strip()
-    title = metadata.get("title") or "Not available"
     return f"""{user_instruction}
-
-Return JSON only with keys "depth" and "breadth", each an array of exactly five question strings.
-
-## Paper metadata
-
-- Title: {title}
-- Authors: {", ".join(metadata.get("authors") or []) or "Not available"}
-
-## Original abstract
-
-{abstract_text.strip() or "Not available."}
 
 ## Extended abstract
 

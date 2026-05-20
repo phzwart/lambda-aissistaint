@@ -9,6 +9,11 @@ import {
 } from './processLogStorage.mjs';
 import { runPaperqaSummary } from './paperqaRunner.mjs';
 import { buildSkillRuntimePayload } from './paperReaderProcessingConfig.mjs';
+import {
+  PARSED_OUTPUT_ARTIFACTS,
+  startParsedArtifactSync,
+  syncParsedOutputDir,
+} from './parsedArtifactSync.mjs';
 import { readProjectFileBuffer } from './projectFiles.mjs';
 import {
   parsedArtifactPrefix,
@@ -19,16 +24,7 @@ import {
 
 export { parsedArtifactPrefix, parsedStemFromObjectKey, processLogObjectKey } from './projectParsedPaths.mjs';
 
-const OUTPUT_ARTIFACTS = [
-  { name: 'extracted.txt', contentType: 'text/plain; charset=utf-8' },
-  { name: 'abstract.txt', contentType: 'text/plain; charset=utf-8' },
-  { name: 'extraction_metadata.json', contentType: 'application/json' },
-  { name: 'summary.md', contentType: 'text/markdown; charset=utf-8' },
-  { name: 'summary.json', contentType: 'application/json' },
-  { name: 'extended_abstract.md', contentType: 'text/markdown; charset=utf-8' },
-  { name: 'follow_up_questions.json', contentType: 'application/json' },
-  { name: 'paper_metadata.json', contentType: 'application/json' },
-];
+const OUTPUT_ARTIFACTS = PARSED_OUTPUT_ARTIFACTS;
 
 export const readProcessLogFromStorage = async (client, project, file) => {
   const stem = parsedStemFromObjectKey(file.objectKey);
@@ -112,6 +108,7 @@ export const processProjectFile = async ({
   });
 
   try {
+    const startedAt = new Date().toISOString();
     await fileLog.initMinioLog(`Processing started for ${file.name} → ${minioLogKey}`);
     await writeProcessingStatus(client, project, stem, {
       status: 'running',
@@ -119,7 +116,7 @@ export const processProjectFile = async ({
       fileName: file.name,
       objectKey: file.objectKey,
       logKey: minioLogKey,
-      startedAt: new Date().toISOString(),
+      startedAt,
     });
 
     await fileLog.append(`Downloading ${file.objectKey} from MinIO`);
@@ -142,7 +139,29 @@ export const processProjectFile = async ({
       `Starting PaperQA2 (model=${paperqaRuntime.litellmRuntime?.modelAlias ?? paperqaRuntime.llmModel}, image=${process.env.PAPERQA2_RUNNER_IMAGE ?? 'localhost/aissistaint/paperqa2-paper-reader:latest'})`,
     );
 
-    await runPaperqaSummary({
+    let checkpointKeys = {};
+    const artifactSync = startParsedArtifactSync({
+      client,
+      project,
+      stem,
+      outputDir,
+      logPath,
+      onSynced: async (keys) => {
+        checkpointKeys = { ...checkpointKeys, ...keys };
+        await writeProcessingStatus(client, project, stem, {
+          status: 'running',
+          fileId: file.id,
+          fileName: file.name,
+          objectKey: file.objectKey,
+          logKey: minioLogKey,
+          startedAt,
+          checkpoints: Object.keys(checkpointKeys),
+        });
+      },
+    });
+
+    try {
+      await runPaperqaSummary({
       inputPdfPath: inputPath,
       outputDir,
       llmModel: paperqaRuntime.llmModel,
@@ -154,13 +173,21 @@ export const processProjectFile = async ({
       skillRuntimePath: paperReaderProcessing ? skillRuntimePath : undefined,
       paperId: file.id,
       citationLabel: stem,
-      onLogLine: (line) => fileLog.append(line, 'paperqa'),
-    });
+        onLogLine: (line) => fileLog.append(line, 'paperqa'),
+      });
+    } finally {
+      artifactSync.stop();
+      await artifactSync.flush();
+      await fileLog.flushNow();
+    }
 
     await fileLog.append('PaperQA2 finished; uploading artifacts to MinIO');
-    await fileLog.flushNow();
 
-    const artifacts = await uploadParsedArtifacts(client, project, stem, outputDir, {
+    const { artifactKeys: artifacts } = await syncParsedOutputDir({
+      client,
+      project,
+      stem,
+      outputDir,
       extraFiles: [{ name: 'process.log', contentType: 'text/plain; charset=utf-8', path: logPath }],
     });
     if (!artifacts['summary.md'] || !artifacts['extracted.txt'] || !artifacts['abstract.txt']) {
@@ -207,12 +234,34 @@ export const processProjectFile = async ({
     const message = error instanceof Error ? error.message : 'Processing failed.';
     await fileLog.append(message, 'error');
     await fileLog.flushNow();
+
+    let partialArtifacts = {};
+    try {
+      const partial = await syncParsedOutputDir({
+        client,
+        project,
+        stem,
+        outputDir,
+        extraFiles: [{ name: 'process.log', contentType: 'text/plain; charset=utf-8', path: logPath }],
+      });
+      partialArtifacts = partial.artifactKeys;
+      const saved = Object.keys(partialArtifacts);
+      if (saved.length > 0) {
+        await fileLog.append(`Checkpoint artifacts preserved in MinIO: ${saved.join(', ')}`);
+        await fileLog.flushNow();
+      }
+    } catch {
+      // best-effort partial upload
+    }
+
     await writeProcessingStatus(client, project, stem, {
       status: 'failed',
       fileId: file.id,
       fileName: file.name,
       logKey: minioLogKey,
       error: message,
+      partial: Object.keys(partialArtifacts).length > 0,
+      artifacts: partialArtifacts,
       finishedAt: new Date().toISOString(),
     });
     throw error;

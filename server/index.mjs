@@ -44,6 +44,7 @@ import { queryWiki as wikiQuery } from './lib/wiki/query.mjs';
 import { buildPaperqaLitellmRuntime } from './lib/paperqaRuntime.mjs';
 import {
   PAPER_READER_SKILL_ID,
+  enrichPaperReaderBindingsForEditor,
   normalizePaperReaderProcessingConfig,
   resolvePaperReaderProcessing,
 } from './lib/paperReaderProcessingConfig.mjs';
@@ -55,6 +56,10 @@ import {
   serializeProjectProcessJob,
 } from './lib/projectProcessJobs.mjs';
 import { readProcessLogFromStorage } from './lib/projectFileProcess.mjs';
+import {
+  listParsedArtifactsForFile,
+  readParsedArtifactForFile,
+} from './lib/parsedArtifacts.mjs';
 import { parsedStemFromObjectKey, processLogObjectKey } from './lib/projectParsedPaths.mjs';
 import { runProjectFileProcessJob } from './lib/runProjectFileProcessJob.mjs';
 import { listProjectFiles, uploadProjectFiles } from './lib/projectFiles.mjs';
@@ -257,7 +262,7 @@ app.use(
     },
   }),
 );
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '4mb' }));
 
 const log = (message, details = {}) => {
   const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : '';
@@ -2510,6 +2515,49 @@ app.get('/api/projects/:id/files/:fileId/process-log', requireAuth, async (reque
   }
 });
 
+app.get('/api/projects/:id/files/:fileId/parsed-artifacts', requireAuth, async (request, response, next) => {
+  try {
+    const project = await requireProjectAccess(request.params.id, request, ['owner', 'editor', 'viewer']);
+    const client = requireProjectMinio(project);
+    const files = await listProjectFiles(client, project);
+    const file = files.find((entry) => entry.id === request.params.fileId);
+    if (!file) {
+      response.status(404).json({ error: 'File not found in this project.' });
+      return;
+    }
+    const listing = await listParsedArtifactsForFile(client, project, file);
+    response.json(listing);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get(
+  '/api/projects/:id/files/:fileId/parsed-artifacts/:artifactName',
+  requireAuth,
+  async (request, response, next) => {
+    try {
+      const project = await requireProjectAccess(request.params.id, request, ['owner', 'editor', 'viewer']);
+      const client = requireProjectMinio(project);
+      const files = await listProjectFiles(client, project);
+      const file = files.find((entry) => entry.id === request.params.fileId);
+      if (!file) {
+        response.status(404).json({ error: 'File not found in this project.' });
+        return;
+      }
+      const artifact = await readParsedArtifactForFile(
+        client,
+        project,
+        file,
+        decodeURIComponent(request.params.artifactName),
+      );
+      response.json(artifact);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 const requireProjectForWiki = requireProjectAccess;
 
 const wikiStorageForProject = (project) => {
@@ -3097,7 +3145,9 @@ app.get('/api/agent-skills', requireAuth, async (request, response, next) => {
     const userSkills = await readAgentSkills(request.user);
     const packageSkillIds = new Set(repoCatalog.skills.map((skill) => skill.id));
     const skills = [...repoCatalog.skills, ...userSkills.filter((skill) => !packageSkillIds.has(skill.id))];
-    const bindings = await readProjectAgentSkillBindings(request.user, projectId, skills);
+    const bindings = enrichPaperReaderBindingsForEditor(
+      await readProjectAgentSkillBindings(request.user, projectId, skills),
+    );
     log('GET /api/agent-skills', {
       count: skills.length,
       projectId: projectId || undefined,
@@ -3203,6 +3253,7 @@ app.put('/api/projects/:id/agent-skills', requireAuth, async (request, response,
       bindings,
       updatedAt: new Date().toISOString(),
     });
+    const bindingsForClient = enrichPaperReaderBindingsForEditor(bindings);
     log('PUT /api/projects/:id/agent-skills', { projectId, bindingCount: bindings.length });
     logAuditEvent({
       event: 'agent_skill.enable',
@@ -3216,7 +3267,7 @@ app.put('/api/projects/:id/agent-skills', requireAuth, async (request, response,
         bindingCount: bindings.length,
       },
     });
-    response.json({ bindings });
+    response.json({ bindings: bindingsForClient });
   } catch (error) {
     next(error);
   }

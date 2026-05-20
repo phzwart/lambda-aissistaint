@@ -1,4 +1,5 @@
 {
-  "extendedAbstractInstruction": "Expand the paper's abstract into a richer narrative (~5× the original abstract length). Add concrete detail on methods, materials, key results, and caveats drawn only from the paper. Do not invent facts, citations, or page numbers. Use plain language suitable for an expert reader.",
-  "followUpQuestionsInstruction": "Generate exactly 5 in-depth follow-up questions (mechanisms, implications, limitations, validation) and 5 breadth questions (adjacent fields, comparisons, applications, methodology transfers). Ground every question in the paper content. Return JSON only: {\"depth\": [\"...\"], \"breadth\": [\"...\"]} with five strings in each array."
+  "summaryInstruction": "Structured summary for summary.md (ten sections). Default template ships with the skill; customize per project in Setup.",
+  "extendedAbstractInstruction": "Expert-level extended abstract: reconstruct the paper from the journal abstract plus full paper text (900–1200 words, anti-summarization rules, inline citations). Default template ships with the skill; customize per project in Setup.",
+  "followUpQuestionsInstruction": "Generate depth/breadth questions from extended abstract + summary only (not full paper). Default template ships with the skill."
 }
