@@ -85,6 +85,7 @@ export function ProcessedFilesInspectPanel({
   const [contentKind, setContentKind] = useState<ParsedArtifactKind | null>(null);
   const [isListing, setIsListing] = useState(false);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
+  const [isDownloadingZip, setIsDownloadingZip] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const inspectableFiles = useMemo(
@@ -213,6 +214,21 @@ export function ProcessedFilesInspectPanel({
 
   const displayContent = content && contentKind ? formatDisplayContent(contentKind, content) : '';
 
+  const handleDownloadZip = async () => {
+    if (!projectId || !inspectFileId || !selectedFile) {
+      return;
+    }
+    setIsDownloadingZip(true);
+    setErrorMessage(null);
+    try {
+      await fileService.downloadParsedArtifactsZip(projectId, inspectFileId, selectedFile.name);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to download artifacts zip.');
+    } finally {
+      setIsDownloadingZip(false);
+    }
+  };
+
   return (
     <section style={panelStyle}>
       <p style={introStyle}>
@@ -255,6 +271,14 @@ export function ProcessedFilesInspectPanel({
           onClick={() => void loadArtifacts()}
         >
           {isListing ? 'Refreshing…' : 'Refresh'}
+        </button>
+        <button
+          type="button"
+          style={primaryButtonStyle}
+          disabled={!inspectFileId || isListing || isDownloadingZip || artifacts.length === 0}
+          onClick={() => void handleDownloadZip()}
+        >
+          {isDownloadingZip ? 'Preparing zip…' : 'Download all as zip'}
         </button>
       </div>
 
@@ -383,6 +407,16 @@ const ghostButtonStyle = {
   borderRadius: 10,
   background: '#ffffff',
   color: '#1f4e79',
+  cursor: 'pointer',
+  fontWeight: 700,
+} satisfies CSSProperties;
+
+const primaryButtonStyle = {
+  padding: '10px 16px',
+  border: '1px solid #1f4e79',
+  borderRadius: 10,
+  background: '#1f4e79',
+  color: '#ffffff',
   cursor: 'pointer',
   fontWeight: 700,
 } satisfies CSSProperties;

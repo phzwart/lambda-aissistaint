@@ -8,6 +8,15 @@ from typing import Any
 
 from .abstract import extract_abstract_from_paper_text
 from .extract import ExtractionError, extract_paper, load_figures_manifest
+from .provenance_substrate import (
+    append_llm_call_record,
+    build_source_spans,
+    serialize_paperqa_contexts,
+    source_hash_from_pdf,
+    write_llm_calls_jsonl,
+    write_paperqa_evidence,
+    write_source_spans_jsonl,
+)
 from .paperqa_settings import (
     RuntimeSettings,
     SettingsError,
@@ -71,6 +80,7 @@ async def run_paperqa_summary(
     skill_runtime_path: str | None = None,
     paper_id: str = "",
     citation_label: str = "",
+    source_hash: str = "",
 ) -> dict[str, str]:
     try:
         from paperqa import Docs
@@ -109,6 +119,10 @@ async def run_paperqa_summary(
     extraction_meta["abstract_char_count"] = abstract_result.char_count
     extraction_meta["abstract_warnings"] = abstract_result.warnings
 
+    resolved_source_hash = source_hash.strip() or source_hash_from_pdf(input_pdf)
+    spans = build_source_spans(extraction.text, resolved_source_hash)
+    write_source_spans_jsonl(output_dir / "source_spans.jsonl", spans)
+
     extracted_path = output_dir / "extracted.txt"
     extracted_path.write_text(extraction.text, encoding="utf-8")
     abstract_path = output_dir / "abstract.txt"
@@ -121,6 +135,9 @@ async def run_paperqa_summary(
 
     docs = Docs()
     warnings: list[str] = list(abstract_result.warnings)
+    evidence_passes: list[dict[str, Any]] = []
+    llm_call_records: list[dict[str, Any]] = []
+    model_alias = runtime.llm_model
     try:
         await docs.aadd(
             str(input_pdf),
@@ -132,6 +149,14 @@ async def run_paperqa_summary(
             skill_runtime["structured_summary_instruction"] or DEFAULT_STRUCTURED_SUMMARY_INSTRUCTION
         )
         summary_session = await docs.aquery(summary_question, settings=settings)
+        evidence_passes.append(
+            serialize_paperqa_contexts(
+                summary_session,
+                extraction_step_id="paperqa_summary",
+                spans=spans,
+                full_text=extraction.text,
+            )
+        )
     except Exception as error:  # pragma: no cover - depends on PaperQA2 runtime internals
         raise PaperQAExecutionError(f"PaperQA2 summary workflow failed: {error}") from error
 
@@ -154,6 +179,14 @@ async def run_paperqa_summary(
         extended_settings = _settings_for_extended_abstract(settings)
         try:
             extended_session = await docs.aquery(extended_question, settings=extended_settings)
+            evidence_passes.append(
+                serialize_paperqa_contexts(
+                    extended_session,
+                    extraction_step_id="paperqa_extended_abstract",
+                    spans=spans,
+                    full_text=extraction.text,
+                )
+            )
             extended_abstract_text = append_figures_markdown_section(
                 _extract_answer(extended_session),
                 figures_manifest,
@@ -179,6 +212,13 @@ async def run_paperqa_summary(
                 settings,
                 questions_question,
                 name="follow_up_questions",
+            )
+            append_llm_call_record(
+                llm_call_records,
+                extraction_step_id="follow_up_questions",
+                model_alias=model_alias,
+                prompt=questions_question,
+                response=questions_raw,
             )
             follow_up_payload = _parse_follow_up_questions(questions_raw, warnings)
             if (
@@ -215,6 +255,13 @@ async def run_paperqa_summary(
                 kg_question,
                 name="knowledge_graph",
             )
+            append_llm_call_record(
+                llm_call_records,
+                extraction_step_id="knowledge_graph",
+                model_alias=model_alias,
+                prompt=kg_question,
+                response=kg_raw,
+            )
             kg_payload = parse_knowledge_graph_response(kg_raw, warnings)
         except Exception as error:  # pragma: no cover
             warnings.append(f"Knowledge graph generation failed: {error}")
@@ -224,10 +271,14 @@ async def run_paperqa_summary(
             encoding="utf-8",
         )
 
+    write_paperqa_evidence(output_dir / "paperqa_evidence.json", evidence_passes)
+    write_llm_calls_jsonl(output_dir / "llm_calls.jsonl", llm_call_records)
+
     metadata = {
         "source_path": str(input_pdf),
         "source_name": input_pdf.name,
         "input_type": "pdf",
+        "source_hash": resolved_source_hash,
         "paper_id": resolved_paper_id,
         "citation_label": resolved_citation_label,
         "file_name": skill_runtime["file_name"] or input_pdf.name,

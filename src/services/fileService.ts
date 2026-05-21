@@ -111,6 +111,53 @@ export const fileService = {
     };
   },
 
+  async downloadParsedArtifactsZip(projectId: string, fileId: string, fileName: string): Promise<void> {
+    const token = await authService.getToken();
+    if (!token) {
+      throw new Error('You must be logged in before downloading artifacts.');
+    }
+
+    const response = await fetch(
+      `${apiBaseUrl}/api/projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}/parsed-artifacts.zip`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      let message = `Download failed with ${response.status}`;
+      if (text) {
+        try {
+          const body = JSON.parse(text) as { error?: string };
+          message = body.error ?? message;
+        } catch {
+          message = text.slice(0, 200);
+        }
+      }
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') ?? '';
+    const match = /filename="?([^";\n]+)"?/i.exec(disposition);
+    const downloadName =
+      match?.[1]?.trim() ??
+      `${fileName.replace(/\.pdf$/i, '') || 'processed-output'}-artifacts.zip`;
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = downloadName;
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  },
+
   async getParsedArtifact(
     projectId: string,
     fileId: string,

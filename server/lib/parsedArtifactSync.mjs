@@ -16,6 +16,13 @@ export const PARSED_OUTPUT_ARTIFACTS = [
   { name: 'follow_up_questions.json', contentType: 'application/json' },
   { name: 'knowledge_graph.json', contentType: 'application/json' },
   { name: 'paper_metadata.json', contentType: 'application/json' },
+  { name: 'source_manifest.json', contentType: 'application/json' },
+  { name: 'source_spans.jsonl', contentType: 'application/x-ndjson' },
+  { name: 'paperqa_evidence.json', contentType: 'application/json' },
+  { name: 'llm_calls.jsonl', contentType: 'application/x-ndjson' },
+  { name: 'claims.jsonl', contentType: 'application/x-ndjson' },
+  { name: 'ingest_manifest.json', contentType: 'application/json' },
+  { name: 'provenance_dag.json', contentType: 'application/json' },
 ];
 
 export const isFigureArtifactName = (name) => /^figures\/[a-zA-Z0-9_.-]+\.png$/.test(name);

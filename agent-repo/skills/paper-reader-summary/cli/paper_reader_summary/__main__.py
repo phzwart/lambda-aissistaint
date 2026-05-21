@@ -38,6 +38,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--paper-id", default="", help="Stable file id from the host (also read from runtime-config).")
     parser.add_argument("--citation-label", default="", help="Upload stem used in PaperQA citations (also read from runtime-config).")
+    parser.add_argument(
+        "--source-hash",
+        default="",
+        help="SHA-256 hex digest of PDF bytes from host (content-addressable source id).",
+    )
     return parser.parse_args(argv)
 
 
@@ -55,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
                 skill_runtime_path=getattr(args, "runtime_config", None) or None,
                 paper_id=str(getattr(args, "paper_id", "") or ""),
                 citation_label=str(getattr(args, "citation_label", "") or ""),
+                source_hash=str(getattr(args, "source_hash", "") or ""),
             )
         )
     except (PaperQAExecutionError, SettingsError) as error:

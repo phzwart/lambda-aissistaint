@@ -344,39 +344,3 @@ def build_summary_record(answer: str, metadata: dict[str, Any], warnings: list[s
     }
 
 
-def build_summary_prompt(metadata: dict[str, Any], paper_text: str) -> str:
-    title = metadata.get("title") or "Not available in provided paper"
-    authors = ", ".join(metadata.get("authors") or []) or "Not available in provided paper"
-    venue_year = " / ".join(
-        item for item in [metadata.get("venue"), metadata.get("year")] if item
-    ) or "Not available in provided paper"
-
-    sections = "\n".join(f"- {section}" for section in SUMMARY_SECTIONS)
-    return f"""# Paper Reader Summary Input
-
-Summarize only the provided paper text. Do not use external search, outside metadata APIs, or cited references that are not included in the paper text.
-
-## Available Metadata
-
-- Title: {title}
-- Authors: {authors}
-- Venue / Year: {venue_year}
-- DOI: {metadata.get("doi") or "Not available in provided paper"}
-- Source: {metadata.get("source_name") or "Unknown"}
-
-## Required Summary Sections
-
-{sections}
-
-## Behavioral Requirements
-
-- Be faithful to the paper.
-- Distinguish author claims from your interpretation.
-- Preserve uncertainty when information is missing, unclear, or inferred.
-- Do not fabricate page numbers, datasets, baselines, metrics, results, or limitations.
-- Use page or section markers from the paper text as evidence anchors when available.
-
-## Paper Text
-
-{paper_text}
-"""

@@ -129,6 +129,7 @@ export const runPaperqaSummary = async ({
   skillRuntimePath,
   paperId,
   citationLabel,
+  sourceHash,
   onLogLine,
   image = process.env.PAPERQA2_RUNNER_IMAGE ?? 'localhost/aissistaint/paperqa2-paper-reader:latest',
   timeoutMs = defaultTimeoutMs,
@@ -213,6 +214,9 @@ export const runPaperqaSummary = async ({
   }
   if (citationLabel?.trim()) {
     args.push('--citation-label', citationLabel.trim());
+  }
+  if (sourceHash?.trim()) {
+    args.push('--source-hash', sourceHash.trim());
   }
 
   if (onLogLine) {

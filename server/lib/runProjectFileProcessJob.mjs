@@ -1,5 +1,4 @@
-import { createProcessLogger } from './processLog.mjs';
-import { processProjectFile, parsedArtifactPrefix } from './projectFileProcess.mjs';
+import { processProjectFile } from './projectFileProcess.mjs';
 import {
   appendProjectProcessJobLog,
   completeProjectProcessJob,
@@ -55,6 +54,8 @@ export const runProjectFileProcessJob = async ({
           paperqaRuntime,
           paperReaderProcessing,
           processLogger,
+          callLlmChatEndpoint,
+          extractLlmAnswer,
         });
         processed.push(result.file);
         setProjectProcessFileLogStatus(jobId, file.id, 'completed');

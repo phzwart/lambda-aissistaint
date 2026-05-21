@@ -56,6 +56,9 @@ AIssistAInt audit events are structured, non-secret operational records. They ar
 | `wiki.delete` | API removes a wiki page from the project bucket | Page body content |
 | `wiki.ingest` | API synthesizes/updates a wiki page from supplied document chunks | Chunk text, full suggestion body, provider keys |
 | `wiki.query` | API answers a question grounded in wiki pages | Question text, full answer body, page bodies |
+| `claim.provenance_read` | API returns provenance DAG for a claim | Claim text, prompt bodies |
+| `ingest_trace.read` | Admin reads per-source ingest trace | Prompt/response bodies when retention enabled |
+| `reingest_diff.read` | Admin compares two ingest runs for a source | Claim text bodies |
 | `broker.auth_denied` | Broker rejects a bearer token | Presented token |
 
 ## Retention And Review

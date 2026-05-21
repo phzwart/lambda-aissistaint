@@ -21,10 +21,16 @@ import {
   processLogObjectKey,
   processStatusObjectKey,
 } from './projectParsedPaths.mjs';
+import { computeSourceHash } from './provenance/sourceHash.mjs';
+import {
+  extractClaims,
+  newIngestId,
+  writeIngestManifest,
+} from './claims/extractClaims.mjs';
+import { IngestTraceBuilder, writeIngestTrace } from './provenance/ingestTrace.mjs';
+import { appendIngestIndexEntry } from './provenance/ingestIndex.mjs';
 
 export { parsedArtifactPrefix, parsedStemFromObjectKey, processLogObjectKey } from './projectParsedPaths.mjs';
-
-const OUTPUT_ARTIFACTS = PARSED_OUTPUT_ARTIFACTS;
 
 export const readProcessLogFromStorage = async (client, project, file) => {
   const stem = parsedStemFromObjectKey(file.objectKey);
@@ -46,39 +52,6 @@ const writeProcessingStatus = async (client, project, stem, payload) => {
   return key;
 };
 
-export const uploadParsedArtifacts = async (client, project, stem, outputDir, { extraFiles = [] } = {}) => {
-  const prefix = parsedArtifactPrefix(project, stem);
-  const uploaded = {};
-
-  const artifacts = [
-    ...OUTPUT_ARTIFACTS,
-    ...extraFiles.map((file) => ({ name: file.name, contentType: file.contentType, path: file.path })),
-  ];
-
-  for (const artifact of artifacts) {
-    const localPath = artifact.path ?? join(outputDir, artifact.name);
-    let body;
-    try {
-      body = await readFile(localPath);
-    } catch {
-      continue;
-    }
-    const key = `${prefix}${artifact.name}`;
-    await client.send(
-      new PutObjectCommand({
-        Bucket: project.bucketName,
-        Key: key,
-        Body: body,
-        ContentLength: body.length,
-        ContentType: artifact.contentType,
-      }),
-    );
-    uploaded[artifact.name] = key;
-  }
-
-  return uploaded;
-};
-
 export const processProjectFile = async ({
   client,
   project,
@@ -86,6 +59,8 @@ export const processProjectFile = async ({
   paperqaRuntime,
   paperReaderProcessing,
   processLogger,
+  callLlmChatEndpoint,
+  extractLlmAnswer,
 }) => {
   const stem = parsedStemFromObjectKey(file.objectKey);
   const workDir = await mkdtemp(join(tmpdir(), 'aissistaint-paperqa-'));
@@ -94,6 +69,8 @@ export const processProjectFile = async ({
   const outputDir = join(workDir, 'output');
   const logPath = join(workDir, 'process.log');
   const minioLogKey = processLogObjectKey(project, stem);
+  const ingestId = newIngestId();
+  const startedAt = new Date().toISOString();
 
   const fileLog = createMinioBackedProcessLogger({
     client,
@@ -108,7 +85,6 @@ export const processProjectFile = async ({
   });
 
   try {
-    const startedAt = new Date().toISOString();
     await fileLog.initMinioLog(`Processing started for ${file.name} → ${minioLogKey}`);
     await writeProcessingStatus(client, project, stem, {
       status: 'running',
@@ -117,13 +93,43 @@ export const processProjectFile = async ({
       objectKey: file.objectKey,
       logKey: minioLogKey,
       startedAt,
+      ingestId,
     });
 
     await fileLog.append(`Downloading ${file.objectKey} from MinIO`);
     const pdfBuffer = await readProjectFileBuffer(client, project, file.objectKey);
-    await fileLog.append(`Downloaded ${(pdfBuffer.length / (1024 * 1024)).toFixed(2)} MB`);
+    const sourceHash = computeSourceHash(pdfBuffer);
+    await fileLog.append(`Downloaded ${(pdfBuffer.length / (1024 * 1024)).toFixed(2)} MB (source_hash=${sourceHash.slice(0, 12)}…)`);
+
+    const traceBuilder = new IngestTraceBuilder({
+      ingestId,
+      sourceHash,
+      stem,
+      file,
+      startedAt,
+    });
+    traceBuilder.addStage({
+      stageId: 'download_pdf',
+      inputs: { object_key: file.objectKey },
+      outputs: { source_hash: sourceHash, byte_size: pdfBuffer.length },
+    });
 
     await writeFile(inputPath, pdfBuffer);
+    const sourceManifest = {
+      source_hash: sourceHash,
+      file_id: file.id,
+      object_key: file.objectKey,
+      stem,
+      byte_size: pdfBuffer.length,
+      sha256_alg: 'sha256',
+    };
+    await mkdir(outputDir, { recursive: true, mode: 0o777 });
+    await writeFile(
+      join(outputDir, 'source_manifest.json'),
+      `${JSON.stringify(sourceManifest, null, 2)}\n`,
+      'utf8',
+    );
+
     if (paperReaderProcessing) {
       await writeFile(
         skillRuntimePath,
@@ -131,7 +137,6 @@ export const processProjectFile = async ({
         'utf8',
       );
     }
-    await mkdir(outputDir, { recursive: true, mode: 0o777 });
     await chmod(workDir, 0o777);
     await chmod(outputDir, 0o777);
 
@@ -155,24 +160,27 @@ export const processProjectFile = async ({
           objectKey: file.objectKey,
           logKey: minioLogKey,
           startedAt,
+          ingestId,
           checkpoints: Object.keys(checkpointKeys),
         });
       },
     });
 
+    const paperqaStarted = Date.now();
     try {
       await runPaperqaSummary({
-      inputPdfPath: inputPath,
-      outputDir,
-      llmModel: paperqaRuntime.llmModel,
-      summaryLlmModel: paperqaRuntime.summaryLlmModel,
-      embeddingModel: paperqaRuntime.embeddingModel,
-      litellmUrl: paperqaRuntime.litellmUrl,
-      litellmApiKey: paperqaRuntime.litellmApiKey,
-      litellmRuntime: paperqaRuntime.litellmRuntime,
-      skillRuntimePath: paperReaderProcessing ? skillRuntimePath : undefined,
-      paperId: file.id,
-      citationLabel: stem,
+        inputPdfPath: inputPath,
+        outputDir,
+        llmModel: paperqaRuntime.llmModel,
+        summaryLlmModel: paperqaRuntime.summaryLlmModel,
+        embeddingModel: paperqaRuntime.embeddingModel,
+        litellmUrl: paperqaRuntime.litellmUrl,
+        litellmApiKey: paperqaRuntime.litellmApiKey,
+        litellmRuntime: paperqaRuntime.litellmRuntime,
+        skillRuntimePath: paperReaderProcessing ? skillRuntimePath : undefined,
+        paperId: file.id,
+        citationLabel: stem,
+        sourceHash,
         onLogLine: (line) => fileLog.append(line, 'paperqa'),
       });
     } finally {
@@ -181,8 +189,55 @@ export const processProjectFile = async ({
       await fileLog.flushNow();
     }
 
-    await fileLog.append('PaperQA2 finished; uploading artifacts to MinIO');
+    traceBuilder.addStage({
+      stageId: 'paperqa_extract',
+      durationMs: Date.now() - paperqaStarted,
+      outputs: {
+        extracted_txt: await readFile(join(outputDir, 'extracted.txt'), 'utf8').catch(() => ''),
+        source_spans_jsonl: await readFile(join(outputDir, 'source_spans.jsonl'), 'utf8').catch(() => ''),
+      },
+    });
 
+    await fileLog.append('PaperQA2 finished; extracting claims');
+    const tier = paperqaRuntime.litellmRuntime?.tier ?? 'a';
+    const modelAlias = paperqaRuntime.litellmRuntime?.modelAlias ?? paperqaRuntime.llmModel;
+    const claimStarted = Date.now();
+    await extractClaims({
+      outputDir,
+      sourceHash,
+      ingestId,
+      tier,
+      callLlmChatEndpoint,
+      extractLlmAnswer,
+      modelAlias,
+      traceBuilder,
+    });
+    traceBuilder.addStage({
+      stageId: 'claim_extract',
+      durationMs: Date.now() - claimStarted,
+      outputs: {
+        claims_jsonl: await readFile(join(outputDir, 'claims.jsonl'), 'utf8').catch(() => ''),
+      },
+    });
+
+    const finishedAt = new Date().toISOString();
+    await writeIngestManifest({
+      outputDir,
+      ingestId,
+      sourceHash,
+      stem,
+      startedAt,
+      finishedAt,
+      extractionSteps: [
+        'download_pdf',
+        'extract_pdf',
+        'paperqa_summary',
+        'claim_extract_llm',
+        'claim_extract_heuristic',
+      ],
+    });
+
+    await fileLog.append('Uploading artifacts to MinIO');
     const { artifactKeys: artifacts } = await syncParsedOutputDir({
       client,
       project,
@@ -196,6 +251,24 @@ export const processProjectFile = async ({
         { status: 502 },
       );
     }
+
+    traceBuilder.addStage({
+      stageId: 'minio_sync',
+      outputs: { artifact_keys: Object.keys(artifacts) },
+    });
+    const trace = traceBuilder.build({ finishedAt });
+    await writeIngestTrace({ client, project, trace });
+    await appendIngestIndexEntry({
+      client,
+      project,
+      sourceHash,
+      entry: {
+        ingest_id: ingestId,
+        stem,
+        finished_at: finishedAt,
+        claims_key: artifacts['claims.jsonl'] ?? null,
+      },
+    });
 
     const summaryText = await readFile(join(outputDir, 'summary.md'), 'utf8');
     let title = file.name;
@@ -215,7 +288,9 @@ export const processProjectFile = async ({
       fileId: file.id,
       fileName: file.name,
       logKey: minioLogKey,
-      finishedAt: new Date().toISOString(),
+      ingestId,
+      sourceHash,
+      finishedAt,
     });
 
     return {
@@ -225,10 +300,14 @@ export const processProjectFile = async ({
         parsedPrefix: parsedArtifactPrefix(project, stem),
         processLogKey: minioLogKey,
         artifacts,
+        sourceHash,
+        ingestId,
       },
       summaryText,
       title,
       sourceId: file.id,
+      sourceHash,
+      ingestId,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Processing failed.';
