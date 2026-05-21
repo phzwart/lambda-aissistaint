@@ -1,0 +1,57 @@
+Convert the paper package into a structured scientific knowledge graph.
+
+Do NOT summarize the paper again.
+
+Extract and normalize:
+
+- concepts
+- materials
+- methods
+- measurements
+- parameters
+- observations
+- claims
+- evidence
+- mechanisms
+- limitations
+- uncertainties
+- open questions
+
+Represent the paper as reusable scientific objects.
+
+Requirements:
+
+1. Decompose the paper into atomic knowledge units.
+2. Separate observations from interpretations and hypotheses.
+3. Link claims to supporting evidence.
+4. Normalize repeated concepts into reusable entities.
+5. Create explicit typed relationships.
+6. Preserve quantitative details where possible.
+7. Preserve uncertainty and limitations.
+8. Avoid prose summaries except where necessary for context.
+
+Return JSON only with these sections (each value must be an array):
+
+{
+  "entities": [],
+  "claims": [],
+  "observations": [],
+  "methods": [],
+  "materials": [],
+  "parameters": [],
+  "limitations": [],
+  "questions": [],
+  "relationships": []
+}
+
+Entity and node conventions:
+- Every object in entities, claims, observations, methods, materials, parameters, limitations, and questions must include a stable string "id" (e.g. ent_1, claim_1, obs_1).
+- Use a "type" or "label" field where helpful; keep fields compact and factual.
+
+Relationship conventions:
+- Each relationship: { "from": "<id>", "to": "<id>", "type": "<relationship_type>" }
+- Allowed types include: depends_on, measured_by, compared_to, causes, hypothesized_to_cause, observed_in, limited_by, validated_by, inconsistent_with
+
+The output should be suitable for semantic retrieval, graph databases, wiki page generation, LLM context assembly, and cross-paper linking.
+
+Output ONLY the JSON object. Do not repeat the paper package text or these instructions.

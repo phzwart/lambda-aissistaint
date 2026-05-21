@@ -1485,7 +1485,8 @@ export function PreferencesPage() {
                           <p style={{ margin: '0 0 12px', color: '#667085', fontSize: 14 }}>
                             Instructions passed to the Paper Reader Summary runner when processing PDFs in this project.
                             The structured summary becomes <code>summary.md</code>; the extended abstract uses the journal
-                            abstract plus full paper text; follow-up questions use only those two outputs.
+                            abstract plus full paper text; follow-up questions use summary and extended abstract;
+                            the knowledge graph compiles the full paper package into <code>knowledge_graph.json</code>.
                           </p>
                           <label style={{ ...fieldStyle, display: 'block', marginBottom: 12 }}>
                             Structured summary instruction
@@ -1613,6 +1614,64 @@ export function PreferencesPage() {
                               }
                             >
                               Reset follow-up to skill default
+                            </button>
+                          </label>
+                          <label style={{ ...fieldStyle, display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={paperConfig.knowledgeGraphEnabled !== false}
+                              onChange={(event) =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  knowledgeGraphEnabled: event.target.checked,
+                                })
+                              }
+                            />
+                            Enable knowledge graph compilation
+                          </label>
+                          <label style={{ ...fieldStyle, display: 'block', marginTop: 12 }}>
+                            Knowledge graph instruction
+                            <textarea
+                              value={paperConfig.knowledgeGraphInstruction ?? ''}
+                              onChange={(event) =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  knowledgeGraphInstruction: event.target.value,
+                                  useDefaultKnowledgeGraphInstruction: false,
+                                })
+                              }
+                              rows={14}
+                              placeholder="Compiles abstract, summary, extended abstract, and follow-up questions into knowledge_graph.json."
+                              style={textareaStyle}
+                              disabled={paperConfig.knowledgeGraphEnabled === false}
+                            />
+                            <span
+                              style={{
+                                marginTop: 6,
+                                fontSize: 12,
+                                color:
+                                  (paperConfig.knowledgeGraphInstruction?.length ?? 0) >
+                                  PAPER_READER_INSTRUCTION_MAX_CHARS
+                                    ? '#9f1d1d'
+                                    : '#667085',
+                              }}
+                            >
+                              {(paperConfig.knowledgeGraphInstruction?.length ?? 0).toLocaleString()} /{' '}
+                              {PAPER_READER_INSTRUCTION_MAX_CHARS.toLocaleString()} characters
+                              {paperConfig.useDefaultKnowledgeGraphInstruction
+                                ? ' · using skill default template'
+                                : ''}
+                            </span>
+                            <button
+                              type="button"
+                              style={{ ...secondaryButtonStyle, marginTop: 8 }}
+                              disabled={paperConfig.knowledgeGraphEnabled === false}
+                              onClick={() =>
+                                updatePaperReaderProcessing(skill.id, {
+                                  knowledgeGraphInstruction: '',
+                                  useDefaultKnowledgeGraphInstruction: true,
+                                })
+                              }
+                            >
+                              Reset knowledge graph to skill default
                             </button>
                           </label>
                         </div>

@@ -128,7 +128,7 @@ podman run --rm --network=host \
   --summary-llm-model LLM_A \
   --embedding-model st-multi-qa-MiniLM-L6-cos-v1
 
-for artifact in extracted.txt abstract.txt summary.md summary.json extended_abstract.md follow_up_questions.json; do
+for artifact in extracted.txt abstract.txt figures_manifest.json summary.md summary.json extended_abstract.md follow_up_questions.json knowledge_graph.json; do
   if [[ ! -f "$OUTPUT_DIR/$artifact" ]]; then
     echo "Missing expected artifact: $artifact" >&2
     ls -la "$OUTPUT_DIR" >&2 || true
@@ -155,6 +155,12 @@ fi
 if ! python3 -c "import json; d=json.load(open('$OUTPUT_DIR/follow_up_questions.json')); assert len(d.get('depth',[]))==5 and len(d.get('breadth',[]))==5"; then
   echo "follow_up_questions.json invalid" >&2
   cat "$OUTPUT_DIR/follow_up_questions.json" >&2 || true
+  exit 1
+fi
+
+if ! python3 -c "import json; d=json.load(open('$OUTPUT_DIR/knowledge_graph.json')); assert isinstance(d.get('entities'), list) and isinstance(d.get('relationships'), list)"; then
+  echo "knowledge_graph.json invalid" >&2
+  cat "$OUTPUT_DIR/knowledge_graph.json" >&2 || true
   exit 1
 fi
 

@@ -43,6 +43,9 @@ test('resolvePaperReaderProcessing applies defaults without binding', async () =
   assert.ok(processing.extendedAbstractInstruction.length > 20);
   assert.ok(processing.followUpQuestionsInstruction.toLowerCase().includes('uncertainty'));
   assert.ok(processing.useDefaultFollowUpQuestionsInstruction);
+  assert.ok(processing.knowledgeGraphInstruction.toLowerCase().includes('knowledge graph'));
+  assert.equal(processing.knowledgeGraphEnabled, true);
+  assert.ok(processing.useDefaultKnowledgeGraphInstruction);
 });
 
 test('resolvePaperReaderProcessing upgrades legacy short extended abstract prompts', async () => {
@@ -105,4 +108,28 @@ test('enrichPaperReaderBindingsForEditor fills default template for useDefault f
   ]);
   assert.equal(enriched[0].processingConfig.summaryInstruction, summaryDefault.trim());
   assert.equal(enriched[0].processingConfig.extendedAbstractInstruction, fileDefault.trim());
+});
+
+test('enrichPaperReaderBindingsForEditor fills knowledge graph default', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const kgDefault = await readFile(
+    new URL(
+      '../../agent-repo/skills/paper-reader-summary/cli/paper_reader_summary/knowledge_graph_instruction_default.txt',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  const enriched = enrichPaperReaderBindingsForEditor([
+    {
+      skillId: 'paper-reader-summary',
+      enabled: true,
+      priority: 1,
+      processingConfig: {
+        useDefaultKnowledgeGraphInstruction: true,
+        knowledgeGraphInstruction: '',
+        knowledgeGraphEnabled: true,
+      },
+    },
+  ]);
+  assert.equal(enriched[0].processingConfig.knowledgeGraphInstruction, kgDefault.trim());
 });

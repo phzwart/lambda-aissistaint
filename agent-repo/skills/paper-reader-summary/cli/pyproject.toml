@@ -20,4 +20,5 @@ paper_reader_summary = [
   "extended_abstract_instruction_default.txt",
   "structured_summary_instruction_default.txt",
   "follow_up_questions_instruction_default.txt",
+  "knowledge_graph_instruction_default.txt",
 ]

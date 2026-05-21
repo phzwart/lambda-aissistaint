@@ -47,6 +47,7 @@ const readInstructionFileSync = (filename) => {
 let cachedExtendedInstruction = null;
 let cachedSummaryInstruction = null;
 let cachedFollowUpInstruction = null;
+let cachedKnowledgeGraphInstruction = null;
 
 const loadExtendedAbstractInstructionDefaultSync = () => {
   if (cachedExtendedInstruction === null) {
@@ -69,9 +70,17 @@ const loadFollowUpQuestionsInstructionDefaultSync = () => {
   return cachedFollowUpInstruction;
 };
 
+const loadKnowledgeGraphInstructionDefaultSync = () => {
+  if (cachedKnowledgeGraphInstruction === null) {
+    cachedKnowledgeGraphInstruction = readInstructionFileSync('knowledge_graph_instruction_default.txt');
+  }
+  return cachedKnowledgeGraphInstruction;
+};
+
 const loadExtendedAbstractInstructionDefault = async () => loadExtendedAbstractInstructionDefaultSync();
 const loadStructuredSummaryInstructionDefault = async () => loadStructuredSummaryInstructionDefaultSync();
 const loadFollowUpQuestionsInstructionDefault = async () => loadFollowUpQuestionsInstructionDefaultSync();
+const loadKnowledgeGraphInstructionDefault = async () => loadKnowledgeGraphInstructionDefaultSync();
 
 const LEGACY_EXTENDED_ABSTRACT_MARKERS = [
   "expand the paper's abstract into a richer narrative",
@@ -120,6 +129,22 @@ const isLegacyFollowUpQuestionsInstruction = (text) => {
   return false;
 };
 
+const LEGACY_KNOWLEDGE_GRAPH_MARKERS = [
+  'structured scientific knowledge',
+  'cross-paper linking',
+];
+
+const isLegacyKnowledgeGraphInstruction = (text) => {
+  const normalized = String(text ?? '').trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized.length < 400) {
+    return !LEGACY_KNOWLEDGE_GRAPH_MARKERS.some((marker) => normalized.includes(marker));
+  }
+  return false;
+};
+
 const trimLongInstruction = (value, label, max = PAPER_READER_INSTRUCTION_MAX_CHARS) => {
   const text = String(value ?? '').trim();
   if (!text) {
@@ -149,6 +174,7 @@ export const normalizePaperReaderProcessingConfig = (raw) => {
   const summaryFileDefault = loadStructuredSummaryInstructionDefaultSync();
   const extendedFileDefault = loadExtendedAbstractInstructionDefaultSync();
   const followUpFileDefault = loadFollowUpQuestionsInstructionDefaultSync();
+  const knowledgeGraphFileDefault = loadKnowledgeGraphInstructionDefaultSync();
 
   const trimmedSummary = trimLongInstruction(raw.summaryInstruction, 'Structured summary instruction');
   const useDefaultSummaryInstruction =
@@ -178,32 +204,36 @@ export const normalizePaperReaderProcessingConfig = (raw) => {
     instructionMatchesFileDefault(trimmedFollowUp, followUpFileDefault);
   const followUpQuestionsInstruction = useDefaultFollowUpQuestionsInstruction ? '' : trimmedFollowUp;
 
+  const trimmedKnowledgeGraph = trimLongInstruction(
+    raw.knowledgeGraphInstruction,
+    'Knowledge graph instruction',
+  );
+  const useDefaultKnowledgeGraphInstruction =
+    raw.useDefaultKnowledgeGraphInstruction === true ||
+    isLegacyKnowledgeGraphInstruction(trimmedKnowledgeGraph) ||
+    instructionMatchesFileDefault(trimmedKnowledgeGraph, knowledgeGraphFileDefault);
+  const knowledgeGraphInstruction = useDefaultKnowledgeGraphInstruction ? '' : trimmedKnowledgeGraph;
+
   const extendedAbstractEnabled = raw.extendedAbstractEnabled !== false;
   const followUpQuestionsEnabled =
     raw.followUpQuestionsEnabled !== false &&
     (useDefaultFollowUpQuestionsInstruction || Boolean(followUpQuestionsInstruction));
+  const knowledgeGraphEnabled =
+    raw.knowledgeGraphEnabled !== false &&
+    (useDefaultKnowledgeGraphInstruction || Boolean(knowledgeGraphInstruction));
 
-  if (!extendedAbstractEnabled && !followUpQuestionsEnabled) {
-    return {
-      summaryInstruction,
-      useDefaultSummaryInstruction,
-      extendedAbstractEnabled: false,
-      followUpQuestionsEnabled: false,
-      extendedAbstractInstruction: '',
-      followUpQuestionsInstruction: '',
-      useDefaultExtendedAbstract: false,
-      useDefaultFollowUpQuestionsInstruction: false,
-    };
-  }
   return {
     summaryInstruction,
     useDefaultSummaryInstruction,
     extendedAbstractEnabled,
     followUpQuestionsEnabled,
+    knowledgeGraphEnabled,
     extendedAbstractInstruction,
     followUpQuestionsInstruction,
+    knowledgeGraphInstruction,
     useDefaultExtendedAbstract: extendedAbstractEnabled && useDefaultExtendedAbstract,
     useDefaultFollowUpQuestionsInstruction: followUpQuestionsEnabled && useDefaultFollowUpQuestionsInstruction,
+    useDefaultKnowledgeGraphInstruction: knowledgeGraphEnabled && useDefaultKnowledgeGraphInstruction,
   };
 };
 
@@ -212,6 +242,7 @@ export const enrichPaperReaderBindingsForEditor = (bindings) => {
   const extendedDefault = loadExtendedAbstractInstructionDefaultSync();
   const summaryDefault = loadStructuredSummaryInstructionDefaultSync();
   const followUpDefault = loadFollowUpQuestionsInstructionDefaultSync();
+  const knowledgeGraphDefault = loadKnowledgeGraphInstructionDefaultSync();
   return (Array.isArray(bindings) ? bindings : []).map((binding) => {
     if (binding?.skillId !== PAPER_READER_SKILL_ID || !binding.processingConfig) {
       return binding;
@@ -239,6 +270,14 @@ export const enrichPaperReaderBindingsForEditor = (bindings) => {
         config.useDefaultFollowUpQuestionsInstruction = true;
       }
     }
+    if (config.knowledgeGraphEnabled !== false) {
+      if (config.useDefaultKnowledgeGraphInstruction && knowledgeGraphDefault) {
+        config.knowledgeGraphInstruction = knowledgeGraphDefault;
+      } else if (isLegacyKnowledgeGraphInstruction(config.knowledgeGraphInstruction) && knowledgeGraphDefault) {
+        config.knowledgeGraphInstruction = knowledgeGraphDefault;
+        config.useDefaultKnowledgeGraphInstruction = true;
+      }
+    }
     return { ...binding, processingConfig: config };
   });
 };
@@ -248,6 +287,7 @@ export const resolvePaperReaderProcessing = async (binding) => {
   const fileSummaryInstruction = await loadStructuredSummaryInstructionDefault();
   const fileExtendedInstruction = await loadExtendedAbstractInstructionDefault();
   const fileFollowUpInstruction = await loadFollowUpQuestionsInstructionDefault();
+  const fileKnowledgeGraphInstruction = await loadKnowledgeGraphInstructionDefault();
   const fallbackSummaryInstruction =
     fileSummaryInstruction || trimLongInstruction(defaults.summaryInstruction, 'Structured summary instruction');
   const fallbackExtendedInstruction =
@@ -285,15 +325,29 @@ export const resolvePaperReaderProcessing = async (binding) => {
     ? fallbackFollowUpInstruction
     : bindingFollowUp || fallbackFollowUpInstruction;
 
+  const useDefaultKnowledgeGraph =
+    fromBinding?.useDefaultKnowledgeGraphInstruction === true ||
+    isLegacyKnowledgeGraphInstruction(fromBinding?.knowledgeGraphInstruction ?? '');
+  const fallbackKnowledgeGraphInstruction =
+    fileKnowledgeGraphInstruction ||
+    trimLongInstruction(defaults.knowledgeGraphInstruction, 'Knowledge graph instruction');
+  const bindingKnowledgeGraph = fromBinding?.knowledgeGraphInstruction ?? '';
+  const knowledgeGraphInstruction = useDefaultKnowledgeGraph
+    ? fallbackKnowledgeGraphInstruction
+    : bindingKnowledgeGraph || fallbackKnowledgeGraphInstruction;
+
   return {
     summaryInstruction,
     useDefaultSummaryInstruction: useDefaultSummary,
     extendedAbstractEnabled: fromBinding?.extendedAbstractEnabled !== false,
     followUpQuestionsEnabled: fromBinding?.followUpQuestionsEnabled !== false,
+    knowledgeGraphEnabled: fromBinding?.knowledgeGraphEnabled !== false,
     extendedAbstractInstruction,
     followUpQuestionsInstruction,
+    knowledgeGraphInstruction,
     useDefaultExtendedAbstract: useDefaultExtended,
     useDefaultFollowUpQuestionsInstruction: useDefaultFollowUp,
+    useDefaultKnowledgeGraphInstruction: useDefaultKnowledgeGraph,
   };
 };
 
@@ -308,8 +362,10 @@ export const buildSkillRuntimePayload = ({ file, processing }) => {
       structuredSummary: processing.summaryInstruction,
       extendedAbstract: processing.extendedAbstractInstruction,
       followUpQuestions: processing.followUpQuestionsInstruction,
+      knowledgeGraph: processing.knowledgeGraphInstruction,
       extendedAbstractEnabled: processing.extendedAbstractEnabled,
       followUpQuestionsEnabled: processing.followUpQuestionsEnabled,
+      knowledgeGraphEnabled: processing.knowledgeGraphEnabled,
     },
   };
 };

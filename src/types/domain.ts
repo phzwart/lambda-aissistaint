@@ -130,12 +130,15 @@ export interface PaperReaderProcessingConfig {
   summaryInstruction?: string;
   extendedAbstractInstruction?: string;
   followUpQuestionsInstruction?: string;
+  knowledgeGraphInstruction?: string;
   extendedAbstractEnabled?: boolean;
   followUpQuestionsEnabled?: boolean;
+  knowledgeGraphEnabled?: boolean;
   /** When true, runtime uses the skill template file; editor may still show the full text. */
   useDefaultSummaryInstruction?: boolean;
   useDefaultExtendedAbstract?: boolean;
   useDefaultFollowUpQuestionsInstruction?: boolean;
+  useDefaultKnowledgeGraphInstruction?: boolean;
 }
 
 export interface ProjectAgentSkillBinding {

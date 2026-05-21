@@ -1,4 +1,4 @@
-export type ParsedArtifactKind = 'text' | 'markdown' | 'json' | 'log';
+export type ParsedArtifactKind = 'text' | 'markdown' | 'json' | 'log' | 'image';
 
 export interface ParsedArtifactEntry {
   name: string;
@@ -26,4 +26,5 @@ export interface ParsedArtifactContent {
   objectKey: string;
   contentType: string;
   content: string;
+  encoding?: 'base64';
 }

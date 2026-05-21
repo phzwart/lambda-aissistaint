@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .abstract import extract_abstract_from_paper_text
-from .extract import ExtractionError, extract_paper
+from .extract import ExtractionError, extract_paper, load_figures_manifest
 from .paperqa_settings import (
     RuntimeSettings,
     SettingsError,
@@ -16,9 +16,13 @@ from .paperqa_settings import (
 )
 from .schema import (
     DEFAULT_STRUCTURED_SUMMARY_INSTRUCTION,
+    append_figures_markdown_section,
     build_extended_abstract_question,
     build_follow_up_questions_question,
+    build_knowledge_graph_question,
     build_summary_record,
+    empty_knowledge_graph_payload,
+    parse_knowledge_graph_response,
 )
 from .skill_runtime import load_skill_runtime, resolve_instructions
 
@@ -95,7 +99,7 @@ async def run_paperqa_summary(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        extraction = extract_paper(input_pdf)
+        extraction = extract_paper(input_pdf, output_dir=output_dir)
     except ExtractionError as error:
         raise PaperQAExecutionError(str(error)) from error
 
@@ -137,6 +141,7 @@ async def run_paperqa_summary(
 
     extended_abstract_text = ""
     extended_abstract_path = output_dir / "extended_abstract.md"
+    figures_manifest = load_figures_manifest(output_dir)
     if skill_runtime["extended_abstract_enabled"]:
         extended_question = build_extended_abstract_question(
             instruction=skill_runtime["extended_abstract_instruction"],
@@ -144,11 +149,15 @@ async def run_paperqa_summary(
             paper_text=extraction.text,
             citation_label=resolved_citation_label,
             document_name=input_pdf.name,
+            figures=figures_manifest,
         )
         extended_settings = _settings_for_extended_abstract(settings)
         try:
             extended_session = await docs.aquery(extended_question, settings=extended_settings)
-            extended_abstract_text = _extract_answer(extended_session)
+            extended_abstract_text = append_figures_markdown_section(
+                _extract_answer(extended_session),
+                figures_manifest,
+            )
             extended_abstract_path.write_text(extended_abstract_text, encoding="utf-8")
         except Exception as error:  # pragma: no cover
             warnings.append(f"Extended abstract generation failed: {error}")
@@ -158,6 +167,7 @@ async def run_paperqa_summary(
             )
 
     follow_up_path = output_dir / "follow_up_questions.json"
+    follow_up_payload: dict[str, Any] = {"depth": [], "breadth": []}
     if skill_runtime["follow_up_questions_enabled"]:
         questions_question = build_follow_up_questions_question(
             instruction=skill_runtime["follow_up_questions_instruction"],
@@ -187,6 +197,30 @@ async def run_paperqa_summary(
             }
         follow_up_path.write_text(
             json.dumps(follow_up_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    knowledge_graph_path = output_dir / "knowledge_graph.json"
+    if skill_runtime["knowledge_graph_enabled"]:
+        kg_question = build_knowledge_graph_question(
+            instruction=skill_runtime["knowledge_graph_instruction"],
+            abstract_text=abstract_result.text,
+            summary_markdown=answer,
+            extended_abstract=extended_abstract_text,
+            follow_up_payload=follow_up_payload,
+        )
+        try:
+            kg_raw = await _call_summary_llm_direct(
+                settings,
+                kg_question,
+                name="knowledge_graph",
+            )
+            kg_payload = parse_knowledge_graph_response(kg_raw, warnings)
+        except Exception as error:  # pragma: no cover
+            warnings.append(f"Knowledge graph generation failed: {error}")
+            kg_payload = {**empty_knowledge_graph_payload(), "error": str(error)}
+        knowledge_graph_path.write_text(
+            json.dumps(kg_payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
@@ -228,6 +262,8 @@ async def run_paperqa_summary(
         outputs["extended_abstract_md"] = str(extended_abstract_path)
     if follow_up_path.exists():
         outputs["follow_up_questions_json"] = str(follow_up_path)
+    if knowledge_graph_path.exists():
+        outputs["knowledge_graph_json"] = str(knowledge_graph_path)
     return outputs
 
 

@@ -11,16 +11,28 @@ const ARTIFACT_SORT_ORDER: Record<string, number> = {
   'extracted.txt': 3,
   'summary.json': 4,
   'follow_up_questions.json': 5,
-  'paper_metadata.json': 6,
-  'extraction_metadata.json': 7,
-  'processing.status.json': 8,
-  'process.log': 9,
+  'knowledge_graph.json': 6,
+  'paper_metadata.json': 7,
+  'extraction_metadata.json': 8,
+  'figures_manifest.json': 9,
+  'processing.status.json': 10,
+  'process.log': 11,
+};
+
+const artifactSortOrder = (name: string) => {
+  if (name in ARTIFACT_SORT_ORDER) {
+    return ARTIFACT_SORT_ORDER[name];
+  }
+  if (name.startsWith('figures/')) {
+    return 9.5;
+  }
+  return 50;
 };
 
 const sortArtifacts = (artifacts: ParsedArtifactEntry[]) =>
   [...artifacts].sort((left, right) => {
-    const leftOrder = ARTIFACT_SORT_ORDER[left.name] ?? 50;
-    const rightOrder = ARTIFACT_SORT_ORDER[right.name] ?? 50;
+    const leftOrder = artifactSortOrder(left.name);
+    const rightOrder = artifactSortOrder(right.name);
     if (leftOrder !== rightOrder) {
       return leftOrder - rightOrder;
     }
@@ -53,6 +65,7 @@ const kindLabel: Record<ParsedArtifactKind, string> = {
   markdown: 'Markdown',
   json: 'JSON',
   log: 'Log',
+  image: 'PNG image',
 };
 
 export function ProcessedFilesInspectPanel({
@@ -302,6 +315,12 @@ export function ProcessedFilesInspectPanel({
                 <p style={{ color: '#667085', margin: 0 }}>Choose an artifact from the list.</p>
               ) : contentKind === 'markdown' && content ? (
                 <MarkdownView markdown={content} style={{ fontSize: 15 }} />
+              ) : contentKind === 'image' && content ? (
+                <img
+                  alt={selectedArtifactName ?? 'Figure'}
+                  src={`data:image/png;base64,${content}`}
+                  style={{ maxWidth: '100%', height: 'auto', borderRadius: 8, border: '1px solid #dbe3ee' }}
+                />
               ) : displayContent ? (
                 <pre style={plainPreStyle}>{displayContent}</pre>
               ) : (

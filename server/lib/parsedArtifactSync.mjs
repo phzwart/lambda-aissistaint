@@ -1,18 +1,41 @@
 import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parsedArtifactPrefix } from './projectParsedPaths.mjs';
+
+export const FIGURES_MANIFEST_NAME = 'figures_manifest.json';
 
 export const PARSED_OUTPUT_ARTIFACTS = [
   { name: 'extracted.txt', contentType: 'text/plain; charset=utf-8' },
   { name: 'abstract.txt', contentType: 'text/plain; charset=utf-8' },
   { name: 'extraction_metadata.json', contentType: 'application/json' },
+  { name: FIGURES_MANIFEST_NAME, contentType: 'application/json' },
   { name: 'summary.md', contentType: 'text/markdown; charset=utf-8' },
   { name: 'summary.json', contentType: 'application/json' },
   { name: 'extended_abstract.md', contentType: 'text/markdown; charset=utf-8' },
   { name: 'follow_up_questions.json', contentType: 'application/json' },
+  { name: 'knowledge_graph.json', contentType: 'application/json' },
   { name: 'paper_metadata.json', contentType: 'application/json' },
 ];
+
+export const isFigureArtifactName = (name) => /^figures\/[a-zA-Z0-9_.-]+\.png$/.test(name);
+
+const listFigureArtifacts = async (outputDir) => {
+  const figuresDir = join(outputDir, 'figures');
+  try {
+    const names = await readdir(figuresDir);
+    return names
+      .filter((name) => name.toLowerCase().endsWith('.png'))
+      .sort()
+      .map((name) => ({
+        name: `figures/${name}`,
+        contentType: 'image/png',
+        path: join(figuresDir, name),
+      }));
+  } catch {
+    return [];
+  }
+};
 
 const fileSignature = async (filePath) => {
   try {
@@ -37,8 +60,10 @@ export const syncParsedOutputDir = async ({
   const prefix = parsedArtifactPrefix(project, stem);
   const synced = { ...Object.fromEntries(uploaded) };
 
+  const figureArtifacts = await listFigureArtifacts(outputDir);
   const artifacts = [
     ...PARSED_OUTPUT_ARTIFACTS,
+    ...figureArtifacts,
     ...extraFiles.map((file) => ({ name: file.name, contentType: file.contentType, path: file.path })),
   ];
 

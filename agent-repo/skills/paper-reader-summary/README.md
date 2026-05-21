@@ -28,13 +28,16 @@ The host must inject:
 
 ## Outputs
 
-- `extracted.txt`: full text extracted from the PDF via PaperQA2's pymupdf parser.
+- `extracted.txt`: full text extracted from the PDF via PaperQA2's pymupdf parser (text only; no embedded PNG blobs).
+- `figures/`: embedded drawings/figures from the PDF saved as PNG files (`pageNNN_figMM.png`).
+- `figures_manifest.json`: index of extracted figures (page, bbox, artifact path) for inspection and sync.
 - `abstract.txt`: verbatim abstract section extracted heuristically from the paper text.
 - `extraction_metadata.json`: title/authors/page-count hints from extraction, plus abstract extraction flags.
 - `summary.md`: human-readable structured summary (citations use the upload stem, e.g. `{timestamp}-{uuid}-{name}.pdf`, not `paper.pdf`).
 - `summary.json`: structured record containing the summary and safe metadata.
-- `extended_abstract.md`: Expert-level reconstruction (900–1200 words) from the journal abstract plus PaperQA-retrieved evidence (not the raw prompt or full `extracted.txt`).
+- `extended_abstract.md`: Expert-level reconstruction (900–1200 words) from the journal abstract plus PaperQA-retrieved evidence (not the raw prompt or full `extracted.txt`). When figures exist, the prompt lists them by page and a **Figures from PDF** section with Markdown image links is appended after generation.
 - `follow_up_questions.json`: `{ "depth": [5 questions], "breadth": [5 questions] }` from `extended_abstract.md` and `summary.md` only (not the full paper).
+- `knowledge_graph.json`: structured entities, claims, observations, methods, materials, parameters, limitations, questions, and relationships compiled from the paper package (abstract, summary, extended abstract, follow-ups) via a direct LLM call — not PaperQA RAG.
 - `paper_metadata.json`: runtime model aliases, `paper_id`, `citation_label`, embedding model, warnings, and safe PaperQA2 response metadata.
 
 Per-project processing instructions are stored on the project skill binding (`processingConfig`) and passed via `skill-runtime.json` at run time. Defaults live in `defaults.json`.

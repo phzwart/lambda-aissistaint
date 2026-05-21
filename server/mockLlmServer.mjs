@@ -50,6 +50,29 @@ All content is synthetic for testing.
 const MOCK_SHORT_ANSWER =
   'The document states this is a mock smoke paper used to validate the processing pipeline (p. 1).';
 
+const MOCK_KNOWLEDGE_GRAPH = {
+  entities: [{ id: 'ent_1', type: 'concept', label: 'beam damage' }],
+  claims: [
+    {
+      id: 'claim_1',
+      statement: 'Radiation can alter operando diffraction signals.',
+      evidence_ids: ['obs_1'],
+    },
+  ],
+  observations: [
+    {
+      id: 'obs_1',
+      description: 'Reaction suppression extended beyond the nominal beam footprint.',
+    },
+  ],
+  methods: [{ id: 'method_1', label: 'operando X-ray diffraction' }],
+  materials: [{ id: 'mat_1', label: 'LFP' }],
+  parameters: [{ id: 'param_1', name: 'beam energy', value: '15 keV' }],
+  limitations: [{ id: 'lim_1', description: 'Mechanism unresolved beyond spatial correlation.' }],
+  questions: [{ id: 'q_1', text: 'Would operando electrolyte spectroscopy detect radiolysis diffusion?' }],
+  relationships: [{ from: 'obs_1', to: 'claim_1', type: 'validated_by' }],
+};
+
 const isChatPath = (pathname) =>
   pathname === '/chat/completions' ||
   pathname === '/v1/chat/completions' ||
@@ -96,7 +119,10 @@ const wantsStructuredSummary = (messages) => {
 const wantsJsonContext = (messages) => {
   const text = messageText(messages).toLowerCase();
   const wantsFollowUp = text.includes('"depth"') && text.includes('"breadth"');
-  if (wantsFollowUp) {
+  const wantsKnowledgeGraph =
+    text.includes('knowledge graph') ||
+    (text.includes('"entities"') && text.includes('"relationships"'));
+  if (wantsFollowUp || wantsKnowledgeGraph) {
     return false;
   }
   return (
@@ -135,6 +161,16 @@ const wantsFollowUpQuestionsRequest = (messages) => {
   );
 };
 
+const wantsKnowledgeGraphRequest = (messages) => {
+  const allUsers = allUserMessageText(messages);
+  return (
+    allUsers.includes('knowledge graph') ||
+    (allUsers.includes('## follow-up questions') &&
+      allUsers.includes('"entities"') &&
+      allUsers.includes('"relationships"'))
+  );
+};
+
 const wantsFollowUpFinalAnswer = (messages) => {
   if (wantsFollowUpQuestionsRequest(messages)) {
     return true;
@@ -155,6 +191,8 @@ const wantsExtendedAbstract = (messages) => {
   }
   return (
     text.includes('## original abstract (verbatim') ||
+    text.includes('## journal abstract') ||
+    text.includes('indexed document for citations') ||
     text.includes('### full paper text') ||
     (text.includes('target length') && text.includes('write plain markdown prose'))
   );
@@ -201,8 +239,12 @@ export const buildMockChatCompletion = (body, { callIndex = 0 } = {}) => {
   const lastUser = lastUserMessageText(messages).toLowerCase();
   let content;
 
-  if (lastUser.includes('answer in a direct and concise tone')) {
-    if (callIndex >= 6) {
+  if (wantsKnowledgeGraphRequest(messages)) {
+    content = JSON.stringify(MOCK_KNOWLEDGE_GRAPH);
+  } else if (lastUser.includes('answer in a direct and concise tone')) {
+    if (callIndex >= 8) {
+      content = JSON.stringify(MOCK_KNOWLEDGE_GRAPH);
+    } else if (callIndex >= 6) {
       content = JSON.stringify(MOCK_FOLLOW_UP_QUESTIONS);
     } else if (callIndex >= 4) {
       content = MOCK_EXTENDED_ABSTRACT;
@@ -211,6 +253,8 @@ export const buildMockChatCompletion = (body, { callIndex = 0 } = {}) => {
     }
   } else if (wantsFollowUpFinalAnswer(messages)) {
     content = JSON.stringify(MOCK_FOLLOW_UP_QUESTIONS);
+  } else if (wantsKnowledgeGraphRequest(messages)) {
+    content = JSON.stringify(MOCK_KNOWLEDGE_GRAPH);
   } else if (wantsJsonContext(messages)) {
     content = JSON.stringify({
       summary:

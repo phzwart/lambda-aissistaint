@@ -1,5 +1,6 @@
 {
   "summaryInstruction": "Structured summary for summary.md (ten sections). Default template ships with the skill; customize per project in Setup.",
   "extendedAbstractInstruction": "Expert-level extended abstract: reconstruct the paper from the journal abstract plus full paper text (900–1200 words, anti-summarization rules, inline citations). Default template ships with the skill; customize per project in Setup.",
-  "followUpQuestionsInstruction": "Generate depth/breadth questions from extended abstract + summary only (not full paper). Default template ships with the skill."
+  "followUpQuestionsInstruction": "Generate depth/breadth questions from extended abstract + summary only (not full paper). Default template ships with the skill.",
+  "knowledgeGraphInstruction": "Compile abstract, summary, extended abstract, and follow-up questions into knowledge_graph.json. Default template ships with the skill."
 }

@@ -10,9 +10,13 @@ export const paperReaderDefaultProcessingConfig = {
     'Expert-level extended abstract: reconstruct the paper from the journal abstract plus full paper text (900–1200 words). Use Reset to load the skill default, or paste a customized prompt.',
   followUpQuestionsInstruction:
     'Follow-up questions from extended abstract + structured summary only (not full paper). Use Reset to load the skill default.',
+  knowledgeGraphInstruction:
+    'Compile the paper package into knowledge_graph.json. Use Reset to load the skill default.',
   extendedAbstractEnabled: true,
   followUpQuestionsEnabled: true,
+  knowledgeGraphEnabled: true,
   useDefaultSummaryInstruction: true,
   useDefaultExtendedAbstract: true,
   useDefaultFollowUpQuestionsInstruction: true,
+  useDefaultKnowledgeGraphInstruction: true,
 };
