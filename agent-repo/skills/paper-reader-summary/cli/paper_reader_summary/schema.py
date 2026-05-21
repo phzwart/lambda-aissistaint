@@ -127,10 +127,16 @@ def format_figures_prompt_block(figures: list[dict[str, Any]]) -> str:
         artifact = entry.get("artifact_name") or ""
         media_type = entry.get("media_type") or "figure"
         caption = (entry.get("caption") or "").strip()
+        nearby = (entry.get("nearby_text") or "").strip()
+        evidence_id = entry.get("id") or ""
         label = f"p. {page}" if page is not None else "unknown page"
         detail = f"- {label}, `{artifact}` ({media_type})"
+        if evidence_id:
+            detail = f"{detail} [{evidence_id}]"
         if caption:
             detail = f"{detail}: {caption}"
+        elif nearby:
+            detail = f"{detail}: {nearby[:200]}"
         lines.append(detail)
     lines.append("")
     return "\n".join(lines)

@@ -24,6 +24,18 @@ def _default_request_timeout_seconds() -> float:
     return 900.0
 
 
+def _default_render_dpi() -> int:
+    raw = os.environ.get("PAPER_RENDER_DPI", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return 300
+
+
 @dataclass(frozen=True)
 class RuntimeSettings:
     llm_model: str
@@ -33,6 +45,7 @@ class RuntimeSettings:
     litellm_api_key: str
     pqa_home: Path
     request_timeout_seconds: float = 900.0
+    render_dpi: int = 300
     provider_model: str = ""
     provider_endpoint: str = ""
     configured_name: str = ""
@@ -56,6 +69,15 @@ class RuntimeSettings:
                 request_timeout_seconds = max(60.0, float(timeout_from_runtime))
             except (TypeError, ValueError):
                 pass
+        render_dpi = _default_render_dpi()
+        cli_dpi = getattr(args, "render_dpi", None)
+        if cli_dpi is not None:
+            try:
+                value = int(cli_dpi)
+                if value > 0:
+                    render_dpi = value
+            except (TypeError, ValueError):
+                pass
         return cls(
             llm_model=llm_model,
             summary_llm_model=summary_llm_model,
@@ -64,6 +86,7 @@ class RuntimeSettings:
             litellm_api_key=litellm_api_key,
             pqa_home=pqa_home,
             request_timeout_seconds=request_timeout_seconds,
+            render_dpi=render_dpi,
             provider_model=str(runtime_json.get("providerModel") or ""),
             provider_endpoint=str(runtime_json.get("providerEndpoint") or ""),
             configured_name=str(runtime_json.get("configuredName") or llm_model),
@@ -95,6 +118,7 @@ class RuntimeSettings:
             "configured_name": self.configured_name,
             "tier": self.tier,
             "request_timeout_seconds": str(int(self.request_timeout_seconds)),
+            "render_dpi": str(self.render_dpi),
         }
 
 

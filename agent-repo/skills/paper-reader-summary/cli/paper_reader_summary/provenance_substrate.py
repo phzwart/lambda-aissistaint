@@ -172,6 +172,7 @@ def serialize_paperqa_contexts(
     extraction_step_id: str,
     spans: list[dict[str, Any]],
     full_text: str,
+    evidence_index: object | None = None,
 ) -> dict[str, Any]:
     contexts_raw = getattr(session, "contexts", None) or getattr(session, "context", None)
     serialized: list[dict[str, Any]] = []
@@ -183,13 +184,22 @@ def serialize_paperqa_contexts(
         for index, context in enumerate(items):
             text = _context_text(context)
             citation = _context_citation(context)
+            matched_span_id = match_span_for_context(text, citation, spans, full_text=full_text)
+            linked_evidence_ids: list[str] = []
+            if evidence_index is not None and hasattr(evidence_index, "linked_ids_for_context"):
+                linked_evidence_ids = evidence_index.linked_ids_for_context(
+                    matched_span_id=matched_span_id,
+                    spans=spans,
+                    citation=citation,
+                )
             serialized.append(
                 {
                     "context_index": index,
                     "text": text[:4000],
                     "score": _context_score(context),
                     "citation": citation,
-                    "matched_span_id": match_span_for_context(text, citation, spans, full_text=full_text),
+                    "matched_span_id": matched_span_id,
+                    "linked_evidence_ids": linked_evidence_ids,
                 }
             )
     return {

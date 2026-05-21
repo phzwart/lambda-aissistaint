@@ -23,9 +23,53 @@ export const PARSED_OUTPUT_ARTIFACTS = [
   { name: 'claims.jsonl', contentType: 'application/x-ndjson' },
   { name: 'ingest_manifest.json', contentType: 'application/json' },
   { name: 'provenance_dag.json', contentType: 'application/json' },
+  { name: 'layout.json', contentType: 'application/json' },
+  { name: 'evidence.json', contentType: 'application/json' },
+  { name: 'chunks.json', contentType: 'application/json' },
+  { name: 'multimodal_context.json', contentType: 'application/json' },
 ];
 
 export const isFigureArtifactName = (name) => /^figures\/[a-zA-Z0-9_.-]+\.png$/.test(name);
+export const isPageArtifactName = (name) => /^pages\/page_\d{4}\.png$/.test(name);
+export const isEquationArtifactName = (name) => /^equations\/[a-zA-Z0-9_.-]+\.png$/.test(name);
+export const isDebugArtifactName = (name) => /^debug\/[a-zA-Z0-9_.-]+(\.png|\.json)$/.test(name);
+
+const listDirPngArtifacts = async (outputDir, subdir, prefix) => {
+  const dir = join(outputDir, subdir);
+  try {
+    const names = await readdir(dir);
+    return names
+      .filter((name) => name.toLowerCase().endsWith('.png'))
+      .sort()
+      .map((name) => ({
+        name: `${prefix}/${name}`,
+        contentType: 'image/png',
+        path: join(dir, name),
+      }));
+  } catch {
+    return [];
+  }
+};
+
+const listDebugArtifacts = async (outputDir) => {
+  const dir = join(outputDir, 'debug');
+  try {
+    const names = await readdir(dir);
+    return names
+      .sort()
+      .map((name) => {
+        const lower = name.toLowerCase();
+        const contentType = lower.endsWith('.json') ? 'application/json' : 'image/png';
+        return {
+          name: `debug/${name}`,
+          contentType,
+          path: join(dir, name),
+        };
+      });
+  } catch {
+    return [];
+  }
+};
 
 const listFigureArtifacts = async (outputDir) => {
   const figuresDir = join(outputDir, 'figures');
@@ -68,9 +112,15 @@ export const syncParsedOutputDir = async ({
   const synced = { ...Object.fromEntries(uploaded) };
 
   const figureArtifacts = await listFigureArtifacts(outputDir);
+  const pageArtifacts = await listDirPngArtifacts(outputDir, 'pages', 'pages');
+  const equationArtifacts = await listDirPngArtifacts(outputDir, 'equations', 'equations');
+  const debugArtifacts = await listDebugArtifacts(outputDir);
   const artifacts = [
     ...PARSED_OUTPUT_ARTIFACTS,
     ...figureArtifacts,
+    ...pageArtifacts,
+    ...equationArtifacts,
+    ...debugArtifacts,
     ...extraFiles.map((file) => ({ name: file.name, contentType: file.contentType, path: file.path })),
   ];
 

@@ -43,6 +43,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="SHA-256 hex digest of PDF bytes from host (content-addressable source id).",
     )
+    parser.add_argument(
+        "--render-dpi",
+        type=int,
+        default=None,
+        help="DPI for rendered page PNGs (default 300, or PAPER_RENDER_DPI).",
+    )
     return parser.parse_args(argv)
 
 

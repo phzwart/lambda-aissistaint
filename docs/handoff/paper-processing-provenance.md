@@ -127,6 +127,78 @@ See `server/lib/provenance/claim.schema.json`.
 5. Aggregate + re-ingest diff
 6. Dead code cleanup
 
-## 10. Out of scope
+## 10. Multimodal artifacts (layout-aware preprocessing)
+
+Produced by `paper-reader-summary` after text extraction; additive to PaperQA2 RAG.
+
+### `layout.json`
+
+```json
+{
+  "version": 1,
+  "model": "lp://PubLayNet/ppyolov2_r50vd_dcn_365e/config",
+  "regions": [
+    {"page": 4, "type": "figure", "bbox": [100, 200, 600, 700], "score": 0.91, "region_index": 3}
+  ]
+}
+```
+
+### `evidence.json`
+
+```json
+{
+  "version": 1,
+  "paper_id": "<fileId>",
+  "source_hash": "<sha256>",
+  "objects": [
+    {
+      "id": "fig_p004_01",
+      "type": "figure",
+      "page": 4,
+      "bbox": [100, 200, 600, 700],
+      "text": "caption and nearby excerpt",
+      "image_path": "figures/fig_p004_01.png",
+      "links": {"nearby": [], "has_caption": [], "caption_of": [], "mentioned_by": [], "referenced_by": []},
+      "embedding": null
+    }
+  ]
+}
+```
+
+### `chunks.json`
+
+Augmentation index over page-level `source_spans` (does not replace PaperQA2 internal chunks):
+
+```json
+{
+  "version": 1,
+  "chunks": [
+    {
+      "span_id": "<hash>",
+      "chunk_index": 0,
+      "page_refs": [1],
+      "linked_figures": ["fig_p001_01"],
+      "linked_equations": [],
+      "linked_tables": [],
+      "linked_evidence_ids": ["fig_p001_01"]
+    }
+  ]
+}
+```
+
+### `paperqa_evidence.json` (extended context fields)
+
+Each context may include `linked_evidence_ids: string[]` resolved from matched span page or citation.
+
+### Environment flags
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PAPER_RENDER_DPI` | `300` | Rendered page PNG resolution |
+| `PAPER_LAYOUT_ENABLED` | `true` | PubLayNet layout detection |
+| `PAPER_MULTIMODAL_DEBUG` | `false` | `debug/layout_overlay_*.png` |
+| `PAPER_EQUATION_OCR` | `false` | Reserved LaTeX OCR hook |
+
+## 11. Out of scope
 
 Wiki ingest, `metadata/provenance.json`, SSBC calibration, TRACE, Agora integration.

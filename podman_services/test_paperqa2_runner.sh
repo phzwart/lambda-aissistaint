@@ -47,7 +47,24 @@ podman run --rm \
   --entrypoint python \
   -v "$CLI_DIR:/workspace/cli:ro" \
   -e PYTHONPATH=/workspace/cli \
+  -e PAPER_LAYOUT_ENABLED=false \
   "$IMAGE" \
   -m unittest discover -s /workspace/cli/tests -p 'test_*.py' -v
+
+echo "==> PubLayNet layout model loads in container (requires image built with [layout] + system libs)"
+podman run --rm \
+  -e PAPER_LAYOUT_ENABLED=true \
+  -e HOME=/workspace \
+  --entrypoint python \
+  "$IMAGE" \
+  -c "
+from paper_reader_summary.layout_runtime import get_layout_model, log_layout_runtime_status, reset_layout_model_cache_for_tests
+reset_layout_model_cache_for_tests()
+model, error = get_layout_model()
+if model is None:
+    raise SystemExit(f'layout model not loaded: {error}')
+log_layout_runtime_status()
+print('layout model OK')
+"
 
 echo "OK: PaperQA2 runner image smoke tests passed ($IMAGE)"

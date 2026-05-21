@@ -9,7 +9,16 @@ description = "Container-ready one-paper PaperQA2 runner for the AIssistAInt pap
 requires-python = ">=3.11"
 dependencies = [
   "paper-qa[local]>=5",
-  "paper-qa-pymupdf>=0"
+  "paper-qa-pymupdf>=0",
+  "Pillow>=10",
+]
+
+[project.optional-dependencies]
+layout = [
+  "layoutparser>=0.3",
+  "paddlepaddle>=2.6,<3.0",
+  "opencv-python-headless>=4.8",
+  "numpy<2",
 ]
 
 [project.scripts]

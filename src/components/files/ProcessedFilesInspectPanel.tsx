@@ -15,6 +15,10 @@ const ARTIFACT_SORT_ORDER: Record<string, number> = {
   'paper_metadata.json': 7,
   'extraction_metadata.json': 8,
   'figures_manifest.json': 9,
+  'layout.json': 9.2,
+  'evidence.json': 9.25,
+  'chunks.json': 9.3,
+  'multimodal_context.json': 9.35,
   'processing.status.json': 10,
   'process.log': 11,
 };
@@ -25,6 +29,15 @@ const artifactSortOrder = (name: string) => {
   }
   if (name.startsWith('figures/')) {
     return 9.5;
+  }
+  if (name.startsWith('pages/')) {
+    return 9.55;
+  }
+  if (name.startsWith('equations/')) {
+    return 9.6;
+  }
+  if (name.startsWith('debug/')) {
+    return 9.65;
   }
   return 50;
 };

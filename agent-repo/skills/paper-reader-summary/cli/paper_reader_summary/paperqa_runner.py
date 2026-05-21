@@ -8,6 +8,7 @@ from typing import Any
 
 from .abstract import extract_abstract_from_paper_text
 from .extract import ExtractionError, extract_paper, load_figures_manifest
+from .multimodal_pipeline import finalize_multimodal_artifacts, run_multimodal_preprocess
 from .provenance_substrate import (
     append_llm_call_record,
     build_source_spans,
@@ -118,9 +119,26 @@ async def run_paperqa_summary(
     extraction_meta["abstract_extracted"] = abstract_result.extracted
     extraction_meta["abstract_char_count"] = abstract_result.char_count
     extraction_meta["abstract_warnings"] = abstract_result.warnings
+    warnings: list[str] = list(abstract_result.warnings)
 
     resolved_source_hash = source_hash.strip() or source_hash_from_pdf(input_pdf)
+    legacy_figures = load_figures_manifest(output_dir)
+    mm_result = run_multimodal_preprocess(
+        input_pdf,
+        output_dir,
+        paper_id=resolved_paper_id,
+        source_hash=resolved_source_hash,
+        full_text=extraction.text,
+        render_dpi=runtime.render_dpi,
+        legacy_figures=legacy_figures,
+    )
+    warnings.extend(mm_result.warnings)
+    extraction_meta["multimodal"] = mm_result.multimodal_metadata
+    extraction_meta["layout_region_count"] = mm_result.layout_region_count
+    extraction_meta["figure_count_layout"] = mm_result.figure_count_layout
+
     spans = build_source_spans(extraction.text, resolved_source_hash)
+    spans = finalize_multimodal_artifacts(output_dir, spans=spans, result=mm_result)
     write_source_spans_jsonl(output_dir / "source_spans.jsonl", spans)
 
     extracted_path = output_dir / "extracted.txt"
@@ -134,7 +152,6 @@ async def run_paperqa_summary(
     )
 
     docs = Docs()
-    warnings: list[str] = list(abstract_result.warnings)
     evidence_passes: list[dict[str, Any]] = []
     llm_call_records: list[dict[str, Any]] = []
     model_alias = runtime.llm_model
@@ -155,6 +172,7 @@ async def run_paperqa_summary(
                 extraction_step_id="paperqa_summary",
                 spans=spans,
                 full_text=extraction.text,
+                evidence_index=mm_result.evidence_index,
             )
         )
     except Exception as error:  # pragma: no cover - depends on PaperQA2 runtime internals
@@ -166,7 +184,7 @@ async def run_paperqa_summary(
 
     extended_abstract_text = ""
     extended_abstract_path = output_dir / "extended_abstract.md"
-    figures_manifest = load_figures_manifest(output_dir)
+    figures_manifest = load_figures_manifest(output_dir) or legacy_figures
     if skill_runtime["extended_abstract_enabled"]:
         extended_question = build_extended_abstract_question(
             instruction=skill_runtime["extended_abstract_instruction"],
@@ -185,6 +203,7 @@ async def run_paperqa_summary(
                     extraction_step_id="paperqa_extended_abstract",
                     spans=spans,
                     full_text=extraction.text,
+                    evidence_index=mm_result.evidence_index,
                 )
             )
             extended_abstract_text = append_figures_markdown_section(

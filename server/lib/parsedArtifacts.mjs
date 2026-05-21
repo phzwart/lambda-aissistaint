@@ -1,5 +1,12 @@
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { FIGURES_MANIFEST_NAME, isFigureArtifactName, PARSED_OUTPUT_ARTIFACTS } from './parsedArtifactSync.mjs';
+import {
+  FIGURES_MANIFEST_NAME,
+  isDebugArtifactName,
+  isEquationArtifactName,
+  isFigureArtifactName,
+  isPageArtifactName,
+  PARSED_OUTPUT_ARTIFACTS,
+} from './parsedArtifactSync.mjs';
 import { parsedArtifactPrefix, parsedStemFromObjectKey } from './projectParsedPaths.mjs';
 
 export const PARSED_ARTIFACT_CATALOG = [
@@ -11,7 +18,10 @@ export const PARSED_ARTIFACT_CATALOG = [
 const ALLOWED_ARTIFACT_NAMES = new Set(PARSED_ARTIFACT_CATALOG.map((entry) => entry.name));
 
 export const artifactKindForName = (name) => {
-  if (isFigureArtifactName(name)) {
+  if (isFigureArtifactName(name) || isPageArtifactName(name) || isEquationArtifactName(name)) {
+    return 'image';
+  }
+  if (isDebugArtifactName(name) && name.toLowerCase().endsWith('.png')) {
     return 'image';
   }
   if (name.endsWith('.md')) {
@@ -52,6 +62,44 @@ const readObjectText = async (client, bucketName, key) => {
   return bytes === null ? null : bytes.toString('utf8');
 };
 
+const loadPageArtifactNames = async (client, bucketName, prefix) => {
+  const metaKey = `${prefix}extraction_metadata.json`;
+  const text = await readObjectText(client, bucketName, metaKey);
+  if (!text) {
+    return [];
+  }
+  try {
+    const payload = JSON.parse(text);
+    const count = Number(payload?.multimodal?.page_count_rendered ?? payload?.page_count ?? 0);
+    if (!Number.isFinite(count) || count <= 0) {
+      return [];
+    }
+    return Array.from({ length: Math.min(count, 500) }, (_, index) => {
+      const page = index + 1;
+      return `pages/page_${String(page).padStart(4, '0')}.png`;
+    });
+  } catch {
+    return [];
+  }
+};
+
+const loadImagePathsFromEvidence = async (client, bucketName, prefix) => {
+  const evidenceKey = `${prefix}evidence.json`;
+  const text = await readObjectText(client, bucketName, evidenceKey);
+  if (!text) {
+    return [];
+  }
+  try {
+    const payload = JSON.parse(text);
+    const objects = Array.isArray(payload?.objects) ? payload.objects : [];
+    return objects
+      .map((entry) => String(entry?.image_path ?? '').trim())
+      .filter((name) => name.endsWith('.png'));
+  } catch {
+    return [];
+  }
+};
+
 const loadFigureNamesFromManifest = async (client, bucketName, prefix) => {
   const manifestKey = `${prefix}${FIGURES_MANIFEST_NAME}`;
   const text = await readObjectText(client, bucketName, manifestKey);
@@ -90,7 +138,13 @@ export const assertAllowedArtifactName = (artifactName) => {
   if (!name || name.includes('..')) {
     throw Object.assign(new Error('Unknown or invalid parsed artifact name.'), { status: 400 });
   }
-  if (ALLOWED_ARTIFACT_NAMES.has(name) || isFigureArtifactName(name)) {
+  if (
+    ALLOWED_ARTIFACT_NAMES.has(name) ||
+    isFigureArtifactName(name) ||
+    isPageArtifactName(name) ||
+    isEquationArtifactName(name) ||
+    isDebugArtifactName(name)
+  ) {
     return name;
   }
   throw Object.assign(new Error('Unknown or invalid parsed artifact name.'), { status: 400 });
@@ -117,8 +171,12 @@ export const listParsedArtifactsForFile = async (client, project, file) => {
     });
   }
 
-  const figureNames = await loadFigureNamesFromManifest(client, project.bucketName, prefix);
-  for (const figureName of figureNames) {
+  const imageNames = new Set([
+    ...(await loadFigureNamesFromManifest(client, project.bucketName, prefix)),
+    ...(await loadImagePathsFromEvidence(client, project.bucketName, prefix)),
+    ...(await loadPageArtifactNames(client, project.bucketName, prefix)),
+  ]);
+  for (const figureName of imageNames) {
     const objectKey = `${prefix}${figureName}`;
     const head = await headObject(client, project.bucketName, objectKey);
     if (!head) {

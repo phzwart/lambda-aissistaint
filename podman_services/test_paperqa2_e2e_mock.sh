@@ -113,6 +113,7 @@ podman run --rm --network=host \
   -e "PAPERQA_LITELLM_URL=$MOCK_URL" \
   -e PAPERQA_LITELLM_API_KEY=mock-smoke-key \
   -e PAPERQA_DISABLE_DOC_VALID_CHECK=1 \
+  -e PAPER_LAYOUT_ENABLED=false \
   -e HF_HOME=/workspace/output/.hf \
   --entrypoint python \
   "$IMAGE" \
@@ -128,7 +129,7 @@ podman run --rm --network=host \
   --summary-llm-model LLM_A \
   --embedding-model st-multi-qa-MiniLM-L6-cos-v1
 
-for artifact in extracted.txt abstract.txt figures_manifest.json summary.md summary.json extended_abstract.md follow_up_questions.json knowledge_graph.json; do
+for artifact in extracted.txt abstract.txt figures_manifest.json layout.json evidence.json chunks.json summary.md summary.json extended_abstract.md follow_up_questions.json knowledge_graph.json; do
   if [[ ! -f "$OUTPUT_DIR/$artifact" ]]; then
     echo "Missing expected artifact: $artifact" >&2
     ls -la "$OUTPUT_DIR" >&2 || true
