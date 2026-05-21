@@ -15,6 +15,16 @@ YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 FIGURES_DIR_NAME = "figures"
 FIGURES_MANIFEST_NAME = "figures_manifest.json"
 
+# PyMuPDF clusters every vector drawing; inline equations are small, wide strips.
+# Sizes are in PDF points (1/72 inch) from the media bbox when available.
+MIN_FIGURE_BBOX_MIN_SIDE_PT = 72.0
+MIN_FIGURE_BBOX_AREA_PT = 8_000.0
+INLINE_EQUATION_MAX_HEIGHT_PT = 40.0
+INLINE_EQUATION_MIN_ASPECT_RATIO = 2.5
+MIN_FIGURE_PIXEL_MIN_SIDE = 100
+MIN_FIGURE_PIXEL_AREA = 18_000
+EXTRACTABLE_MEDIA_TYPES = frozenset({"drawing", "screenshot"})
+
 
 class ExtractionError(RuntimeError):
     """Raised when local paper extraction cannot continue."""
@@ -218,24 +228,101 @@ def _media_info_dict(media: object) -> dict[str, Any]:
     return {}
 
 
+def _bbox_dimensions_points(info: dict[str, Any]) -> tuple[float, float] | None:
+    bbox_raw = info.get("bbox")
+    if not isinstance(bbox_raw, (list, tuple)) or len(bbox_raw) < 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(bbox_raw[0]), float(bbox_raw[1]), float(bbox_raw[2]), float(bbox_raw[3]))
+    except (TypeError, ValueError):
+        return None
+    width = abs(x1 - x0)
+    height = abs(y1 - y0)
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _figure_filter_reason(info: dict[str, Any]) -> str | None:
+    """Return a skip reason, or None if the media item should be saved as a figure."""
+    media_type = str(info.get("type") or "").strip().lower()
+    if media_type == "table":
+        return "table (not exported as figure)"
+    if media_type and media_type not in EXTRACTABLE_MEDIA_TYPES:
+        return f"unsupported media type '{media_type}'"
+
+    bbox_size = _bbox_dimensions_points(info)
+    if bbox_size is not None:
+        width_pt, height_pt = bbox_size
+        min_side = min(width_pt, height_pt)
+        max_side = max(width_pt, height_pt)
+        area = width_pt * height_pt
+        if (
+            height_pt <= INLINE_EQUATION_MAX_HEIGHT_PT
+            and max_side / min_side >= INLINE_EQUATION_MIN_ASPECT_RATIO
+        ):
+            return "inline equation or symbol strip (small height, wide aspect)"
+        if min_side < MIN_FIGURE_BBOX_MIN_SIDE_PT or area < MIN_FIGURE_BBOX_AREA_PT:
+            return "region too small for a figure"
+        return None
+
+    width = info.get("width")
+    height = info.get("height")
+    try:
+        width_px = int(width) if width is not None else None
+        height_px = int(height) if height is not None else None
+    except (TypeError, ValueError):
+        width_px = height_px = None
+    if width_px and height_px:
+        min_side = min(width_px, height_px)
+        max_side = max(width_px, height_px)
+        area = width_px * height_px
+        if (
+            height_px <= 48
+            and max_side / max(min_side, 1) >= INLINE_EQUATION_MIN_ASPECT_RATIO
+        ):
+            return "inline equation or symbol strip (small height, wide aspect)"
+        if min_side < MIN_FIGURE_PIXEL_MIN_SIDE or area < MIN_FIGURE_PIXEL_AREA:
+            return "region too small for a figure"
+        return None
+
+    return "missing size metadata"
+
+
 def _write_figures_from_parsed(parsed_pages: object, output_dir: Path) -> tuple[list[ExtractedFigure], list[str]]:
     warnings: list[str] = []
     figures_dir = output_dir / FIGURES_DIR_NAME
     figures_dir.mkdir(parents=True, exist_ok=True)
     manifest_entries: list[dict[str, Any]] = []
+    skipped_entries: list[dict[str, Any]] = []
     figures: list[ExtractedFigure] = []
 
     for page_number, media in _iter_page_media(parsed_pages):
         png_bytes = _media_png_bytes(media)
         if not png_bytes:
             continue
+        info = _media_info_dict(media)
+        skip_reason = _figure_filter_reason(info)
         media_index = int(getattr(media, "index", len(figures)) or len(figures))
+        if skip_reason:
+            bbox_raw = info.get("bbox")
+            skipped_entries.append(
+                {
+                    "page": page_number,
+                    "index": media_index,
+                    "media_type": str(info.get("type") or "").strip() or None,
+                    "reason": skip_reason,
+                    "bbox": list(bbox_raw) if isinstance(bbox_raw, (list, tuple)) else None,
+                    "width_px": info.get("width"),
+                    "height_px": info.get("height"),
+                }
+            )
+            continue
         filename = f"page{page_number:03d}_fig{media_index + 1:02d}.png"
         artifact_name = f"{FIGURES_DIR_NAME}/{filename}"
         target_path = output_dir / artifact_name
         target_path.write_bytes(png_bytes)
 
-        info = _media_info_dict(media)
         bbox_raw = info.get("bbox")
         bbox = [float(value) for value in bbox_raw] if isinstance(bbox_raw, (list, tuple)) else None
         media_type = str(info.get("type") or "").strip() or None
@@ -280,10 +367,24 @@ def _write_figures_from_parsed(parsed_pages: object, output_dir: Path) -> tuple[
 
     manifest_path = output_dir / FIGURES_MANIFEST_NAME
     manifest_path.write_text(
-        json.dumps({"figures": manifest_entries, "count": len(manifest_entries)}, indent=2, sort_keys=True),
+        json.dumps(
+            {
+                "figures": manifest_entries,
+                "count": len(manifest_entries),
+                "skipped": skipped_entries,
+                "skipped_count": len(skipped_entries),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
-    if not manifest_entries:
+    if not manifest_entries and skipped_entries:
+        warnings.append(
+            f"No figures met size filters; {len(skipped_entries)} embedded drawing(s) skipped "
+            "(often inline equations or small vector art)."
+        )
+    elif not manifest_entries:
         warnings.append("No embedded figures were extracted from the PDF.")
     return figures, warnings
 

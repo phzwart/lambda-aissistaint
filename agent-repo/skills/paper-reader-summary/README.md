@@ -29,8 +29,8 @@ The host must inject:
 ## Outputs
 
 - `extracted.txt`: full text extracted from the PDF via PaperQA2's pymupdf parser (text only; no embedded PNG blobs).
-- `figures/`: embedded drawings/figures from the PDF saved as PNG files (`pageNNN_figMM.png`).
-- `figures_manifest.json`: index of extracted figures (page, bbox, artifact path) for inspection and sync.
+- `figures/`: substantial figures from the PDF saved as PNG files (`pageNNN_figMM.png`). Small vector clusters (typical inline equations and symbols) are filtered out; see `skipped` in the manifest.
+- `figures_manifest.json`: index of extracted figures (page, bbox, artifact path) plus `skipped` entries with filter reasons.
 - `abstract.txt`: verbatim abstract section extracted heuristically from the paper text.
 - `extraction_metadata.json`: title/authors/page-count hints from extraction, plus abstract extraction flags.
 - `summary.md`: human-readable structured summary (citations use the upload stem, e.g. `{timestamp}-{uuid}-{name}.pdf`, not `paper.pdf`).

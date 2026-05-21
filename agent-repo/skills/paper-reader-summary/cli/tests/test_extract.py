@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from paper_reader_summary.extract import _normalize_paperqa_pages, _write_figures_from_parsed
+from paper_reader_summary.extract import (
+    _figure_filter_reason,
+    _normalize_paperqa_pages,
+    _write_figures_from_parsed,
+)
 from paper_reader_summary.schema import (
     append_figures_markdown_section,
     build_extended_abstract_question,
@@ -33,6 +37,24 @@ class ExtractNormalizationTests(unittest.TestCase):
 
 
 class FigureExtractionTests(unittest.TestCase):
+    def test_skips_inline_equation_sized_drawings(self) -> None:
+        info = {
+            "bbox": (411.36, 137.19, 515.62, 164.18),
+            "type": "drawing",
+            "width": 105,
+            "height": 28,
+        }
+        self.assertIsNotNone(_figure_filter_reason(info))
+
+    def test_keeps_large_figure_bbox(self) -> None:
+        info = {
+            "bbox": (72.0, 72.0, 400.0, 320.0),
+            "type": "drawing",
+            "width": 400,
+            "height": 320,
+        }
+        self.assertIsNone(_figure_filter_reason(info))
+
     def test_write_figures_from_parsed_saves_png_and_manifest(self) -> None:
         import tempfile
 
@@ -41,7 +63,12 @@ class FigureExtractionTests(unittest.TestCase):
             index=0,
             data=png_header,
             text=None,
-            info={"bbox": [1.0, 2.0, 3.0, 4.0], "type": "drawing", "width": 10, "height": 5},
+            info={
+                "bbox": (72.0, 72.0, 400.0, 320.0),
+                "type": "drawing",
+                "width": 400,
+                "height": 320,
+            },
         )
         parsed = SimpleNamespace(
             content={"12": ("Appendix text", [media])},
@@ -57,6 +84,33 @@ class FigureExtractionTests(unittest.TestCase):
             self.assertEqual(manifest["count"], 1)
             self.assertEqual(manifest["figures"][0]["page"], 12)
             self.assertNotIn("No embedded figures", " ".join(warnings))
+
+    def test_write_figures_skips_small_drawings(self) -> None:
+        import tempfile
+
+        png_header = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        media = SimpleNamespace(
+            index=0,
+            data=png_header,
+            text=None,
+            info={
+                "bbox": (411.36, 137.19, 515.62, 164.18),
+                "type": "drawing",
+                "width": 105,
+                "height": 28,
+            },
+        )
+        parsed = SimpleNamespace(
+            content={"12": ("Body", [media])},
+            metadata=SimpleNamespace(model_dump=lambda: {}),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            figures, _warnings = _write_figures_from_parsed(parsed, tmp_path)
+            self.assertEqual(len(figures), 0)
+            manifest = json.loads((tmp_path / "figures_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["count"], 0)
+            self.assertEqual(manifest["skipped_count"], 1)
 
 
 class ExtendedAbstractFigureTests(unittest.TestCase):
