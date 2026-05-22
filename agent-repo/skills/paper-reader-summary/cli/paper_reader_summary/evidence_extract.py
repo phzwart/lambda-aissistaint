@@ -199,4 +199,9 @@ def load_legacy_figures_from_manifest(output_dir: Path) -> list[dict[str, Any]]:
     figures = payload.get("figures")
     if not isinstance(figures, list):
         return []
-    return [entry for entry in figures if entry.get("extraction_method") == "embedded_pdf"]
+    legacy: list[dict[str, Any]] = []
+    for entry in figures:
+        method = str(entry.get("extraction_method") or "").strip()
+        if method in {"", "embedded_pdf", "legacy_embedded"}:
+            legacy.append(entry)
+    return legacy

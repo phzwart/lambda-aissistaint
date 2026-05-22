@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
 
 from .layout_config import layout_enabled, layout_model_id
 from .layout_runtime import get_layout_model
@@ -46,6 +50,12 @@ class LayoutRegion:
 def _map_label(label: str) -> str:
     normalized = str(label or "").strip()
     return PUBLAYNET_LABEL_MAP.get(normalized, normalized.lower() if normalized else "paragraph")
+
+
+def _load_page_rgb_image(page_path: Path) -> Image.Image:
+    """Paddle layout models require PIL/ndarray input, not filesystem paths."""
+    with Image.open(page_path) as image:
+        return image.convert("RGB")
 
 
 def _maybe_equation(region: LayoutRegion) -> LayoutRegion:
@@ -99,7 +109,8 @@ def detect_layout(
     region_counter = 0
     for page_image in pages:
         try:
-            layout = model.detect(page_image.path)
+            page_rgb = _load_page_rgb_image(page_image.path)
+            layout = model.detect(page_rgb)
         except Exception as error:  # pragma: no cover
             warnings.append(f"Layout detection failed on page {page_image.page}: {error}")
             continue
@@ -121,6 +132,20 @@ def detect_layout(
             )
             region_counter += 1
             regions.append(_maybe_equation(region))
+
+    if regions:
+        type_counts = Counter(region.type for region in regions)
+        print(
+            f"[multimodal] layout regions={len(regions)} by_type={dict(type_counts)}",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif pages:
+        print(
+            "[multimodal] layout regions=0 (no blocks detected on rendered pages)",
+            file=sys.stderr,
+            flush=True,
+        )
 
     return regions, warnings, model_id
 

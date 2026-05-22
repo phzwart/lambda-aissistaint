@@ -36,7 +36,12 @@ def _allow_full_torch_checkpoints() -> None:
 
 _allow_full_torch_checkpoints()
 
-from .layout_config import DEFAULT_LAYOUT_MODEL_ID, layout_enabled, layout_model_id
+from .layout_config import (
+    DEFAULT_LAYOUT_MODEL_ID,
+    layout_detect_extra_config,
+    layout_enabled,
+    layout_model_id,
+)
 
 _LAYOUT_MODEL_CACHE: dict[str, object] = {}
 _LAYOUT_MODEL_LOAD_FAILED: dict[str, str] = {}
@@ -146,7 +151,7 @@ def _create_layout_model(lp: object, resolved_id: str, *, is_paddle_available: o
     ):
         from layoutparser.models.paddledetection import PaddleDetectionLayoutModel
 
-        return PaddleDetectionLayoutModel(resolved_id)
+        return PaddleDetectionLayoutModel(resolved_id, extra_config=layout_detect_extra_config())
     return lp.AutoLayoutModel(resolved_id)
 
 
