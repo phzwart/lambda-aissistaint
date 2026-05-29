@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-gritsqueezer"
+version = "0.1.0"
+description = "Standalone runner that extracts a pygrits v0.4.0 schema-valid grit bundle from a scientific PDF, verified against the paper with PaperQA2 retrieval."
+requires-python = ">=3.11"
+dependencies = [
+  "pygrits @ file:///home/sparksvc/mAInager/pygrits",
+  "paper-qa[local]>=5",
+  "paper-qa-pymupdf>=0",
+  "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+paper-gritsqueezer = "paper_gritsqueezer.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paper_gritsqueezer*"]
+
+[tool.setuptools.package-data]
+paper_gritsqueezer = [
+  "grit_squeezer_instruction_default.txt",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

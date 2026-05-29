@@ -49,6 +49,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="DPI for rendered page PNGs (default 300, or PAPER_RENDER_DPI).",
     )
+    parser.add_argument(
+        "--chunk-chars",
+        type=int,
+        default=None,
+        help="PaperQA2 chunk size in characters (default 5000, or PAPERQA_CHUNK_CHARS / runtime chunkChars).",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=None,
+        help="PaperQA2 chunk overlap in characters (default 250, or PAPERQA_CHUNK_OVERLAP / runtime chunkOverlap).",
+    )
     return parser.parse_args(argv)
 
 
