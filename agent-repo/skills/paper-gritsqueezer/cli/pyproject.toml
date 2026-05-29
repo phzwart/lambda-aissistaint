@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "Standalone runner that extracts a pygrits v0.4.0 schema-valid grit bundle from a scientific PDF, verified against the paper with PaperQA2 retrieval."
 requires-python = ">=3.11"
 dependencies = [
-  "pygrits @ file:///home/sparksvc/mAInager/pygrits",
+  # pygrits is not published on PyPI; provide it out-of-band before installing
+  # this package, e.g. `pip install "pygrits @ git+https://github.com/phzwart/pygrits@main"`
+  # (the container build does exactly this) or an editable local checkout.
+  "pygrits>=0.4.0",
   "paper-qa[local]>=5",
   "paper-qa-pymupdf>=0",
   "PyYAML>=6",

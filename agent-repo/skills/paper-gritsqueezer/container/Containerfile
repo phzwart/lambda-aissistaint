@@ -1,0 +1,46 @@
+FROM docker.io/library/python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PQA_HOME=/workspace/.pqa \
+    HOME=/workspace \
+    TORCH_HOME=/workspace/.torch \
+    HF_HOME=/workspace/.cache/huggingface \
+    MPLBACKEND=Agg \
+    TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
+
+# pygrits is not on PyPI; pull it from GitHub. Override the ref/url at build time
+# (e.g. --build-arg PYGRITS_REF=<tag-or-commit>) to pin a reproducible version.
+ARG PYGRITS_URL=git+https://github.com/phzwart/pygrits
+ARG PYGRITS_REF=main
+
+# git is needed to install pygrits from source; libgomp1 backs torch (paper-qa[local]).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        libglib2.0-0 \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system runner \
+    && useradd --system --gid runner --home-dir /workspace --create-home runner
+
+WORKDIR /workspace
+
+COPY cli /tmp/paper-gritsqueezer-cli
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install "pygrits @ ${PYGRITS_URL}@${PYGRITS_REF}" \
+    && python -m pip install /tmp/paper-gritsqueezer-cli \
+    && rm -rf /tmp/paper-gritsqueezer-cli
+
+# Fail the build early if the package or its grit schema dependency is broken.
+RUN python -c "import paper_gritsqueezer, pygrits, paperqa, paperqa_pymupdf; print('paper-gritsqueezer', paper_gritsqueezer.__version__)"
+
+RUN mkdir -p /workspace/input /workspace/output /workspace/.pqa \
+    && chown -R runner:runner /workspace
+
+USER runner
+
+ENTRYPOINT ["paper-gritsqueezer"]
